@@ -14,6 +14,7 @@ export const getFundamentalsTool: Tool<Input> = {
   description: [
     'Latest fundamentals for Taiwan-listed companies (TWSE and TPEx): valuation (P/E, dividend yield, P/B), the latest monthly revenue with MoM/YoY growth, and the latest quarterly income statement with EPS and margins.',
     'All amounts are TWD (converted from the exchanges\' thousands). The income statement is year-to-date (cumulative from January through the reported quarter), as filed in Taiwan.',
+    'P/E uses the latest four quarters of EPS, which can lag the income statement (see earnings_period); dividend yield uses the latest annual dividend (see dividend_year and dividend_per_share). Yields above 20% are flagged in warnings because they usually reflect a one-off distribution.',
     'ETFs and some securities have no fundamentals; such inputs are listed in `unresolved`.',
     'Sources: TWSE / TPEx OpenAPI, refreshed daily (valuation) to monthly/quarterly (revenue, financials).',
   ].join(' '),
@@ -48,9 +49,12 @@ export const getFundamentalsTool: Tool<Input> = {
               type: ['object', 'null'],
               properties: {
                 date: { type: ['string', 'null'] },
-                pe_ratio: nullableNumber,
-                dividend_yield_percent: nullableNumber,
+                pe_ratio: { ...nullableNumber, description: 'Price / EPS of the four quarters ending at earnings_period' },
+                dividend_yield_percent: { ...nullableNumber, description: 'dividend_per_share / close' },
                 pb_ratio: nullableNumber,
+                dividend_per_share: { ...nullableNumber, description: 'TWD; derived as close x yield for TWSE' },
+                dividend_year: { type: ['integer', 'null'], description: 'Year of the dividend used (TWSE only)' },
+                earnings_period: { type: ['string', 'null'], description: 'e.g. "2026 Q3": last quarter in the P/E (TWSE only)' },
               },
             },
             monthly_revenue: {

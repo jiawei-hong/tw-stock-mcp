@@ -1,5 +1,12 @@
 import { type DailyQuote, loadTpexDaily, loadTwseDaily } from '../core/daily-quotes.js'
-import { loadDataset, parseRevenue, parseValuation, revenuePath, valuationPath } from '../core/fundamentals.js'
+import {
+  highYieldNote,
+  loadDataset,
+  loadValuations,
+  parseRevenue,
+  revenuePath,
+  type Valuation,
+} from '../core/fundamentals.js'
 import type { Market } from '../core/market.js'
 import { classifySecurity, SECURITY_TYPES, type SecurityType } from '../core/securities.js'
 import { findTradingDay, noTradingDataMessage } from '../core/trading-day.js'
@@ -11,8 +18,8 @@ const METRICS = {
   change_percent: 'Daily change, %',
   volume: 'Shares traded',
   turnover: 'Turnover, TWD',
-  pe_ratio: 'Price/earnings ratio (only companies with positive earnings have one)',
-  dividend_yield: 'Dividend yield, %',
+  pe_ratio: 'Price/earnings ratio on the latest four quarters of EPS (only companies with positive earnings have one)',
+  dividend_yield: 'Dividend yield, %, on the latest annual dividend; above 20% is usually a one-off distribution (flagged in notes)',
   pb_ratio: 'Price/book ratio',
   revenue_yoy: 'Latest monthly revenue growth year over year, %',
 } as const
@@ -59,7 +66,7 @@ export const screenStocksTool: Tool<Input> = {
   title: 'Screen Taiwan stocks',
   description: [
     'Filter all TWSE and TPEx stocks by end-of-day price, change, volume and turnover, and by valuation (P/E, dividend yield, P/B) and monthly revenue growth.',
-    'Every filter is an optional min_/max_ bound, e.g. {"min_dividend_yield": 5, "max_pe_ratio": 15, "min_turnover": 50000000}. Rows missing a filtered metric are excluded.',
+    'Every filter is an optional min_/max_ bound, e.g. {"min_dividend_yield": 5, "max_pe_ratio": 15, "min_turnover": 100000000}. Rows missing a filtered metric are excluded.',
     'Defaults to common stocks only; results are sorted by `sort_by` (default turnover, descending).',
     'Price filters use the latest (or given) trading day; fundamental filters always use the latest published snapshot, so `date` cannot be combined with them.',
   ].join(' '),
@@ -140,20 +147,20 @@ export const screenStocksTool: Tool<Input> = {
     if (!market) quotes = [...quotes, ...((await loadTpexDaily(found.date, signal)) ?? [])]
 
     const markets: Market[] = market ? [market] : ['tse', 'otc']
-    const valuations = new Map<string, ReturnType<typeof parseValuation>>()
+    const valuations = new Map<string, Valuation>()
     const revenues = new Map<string, ReturnType<typeof parseRevenue>>()
     if (needsFundamentals) {
-      const unavailable = (label: string) => (error: unknown) => {
+      const unavailable = <T>(label: string, empty: T) => (error: unknown) => {
         notes.push(`${label} unavailable, so those stocks lack it and fail its filters: ${error instanceof Error ? error.message : String(error)}`)
-        return new Map<string, Record<string, unknown>[]>()
+        return empty
       }
       for (const entry of markets) {
         const exchange = entry === 'tse' ? 'TWSE' : 'TPEx'
         const [valuation, revenue] = await Promise.all([
-          loadDataset(entry, valuationPath(entry), signal).catch(unavailable(`${exchange} valuation`)),
-          loadDataset(entry, revenuePath(entry), signal).catch(unavailable(`${exchange} revenue`)),
+          loadValuations(entry, signal).catch(unavailable(`${exchange} valuation`, new Map<string, { valuation: Valuation }>())),
+          loadDataset(entry, revenuePath(entry), signal).catch(unavailable(`${exchange} revenue`, new Map<string, Record<string, unknown>[]>())),
         ])
-        for (const [code, rows] of valuation) valuations.set(code, parseValuation(rows[0]))
+        for (const [code, entry] of valuation) valuations.set(code, entry.valuation)
         for (const [code, rows] of revenue) revenues.set(code, parseRevenue(rows[0]))
       }
       const valuationDate = [...valuations.values()].find((value) => value?.date)?.date
@@ -191,6 +198,11 @@ export const screenStocksTool: Tool<Input> = {
       .filter((row) => row[sort_by] !== null)
       .sort((left, right) => direction * ((left[sort_by] as number) - (right[sort_by] as number)))
 
-    return { date: found.date, matched: matched.length, results: matched.slice(0, limit), filters, notes }
+    const results = matched.slice(0, limit)
+    for (const row of results) {
+      const note = highYieldNote(row.code, valuations.get(row.code) ?? null)
+      if (note) notes.push(note)
+    }
+    return { date: found.date, matched: matched.length, results, filters, notes }
   },
 }

@@ -1,6 +1,6 @@
 import { requestJson } from './http.js'
 import type { Market } from './market.js'
-import { marketDate } from './market.js'
+import { marketDate, strictNumber } from './market.js'
 
 /**
  * Fundamentals from the TWSE / TPEx OpenAPI full-market datasets.
@@ -34,9 +34,28 @@ const THOUSAND = 1000
 
 export type Valuation = {
   date: string | null
+  /** Price / EPS of the four quarters ending at `earnings_period`. */
   pe_ratio: number | null
+  /** dividend_per_share / close. */
   dividend_yield_percent: number | null
   pb_ratio: number | null
+  /** TWD. TPEx publishes it; for TWSE it is derived as close x yield. */
+  dividend_per_share: number | null
+  /** Year of the dividend the yield is based on (TWSE only). */
+  dividend_year: number | null
+  /** Latest quarter in the P/E's earnings, e.g. "2026 Q3" (TWSE only). */
+  earnings_period: string | null
+}
+
+/** Yields above this are almost always one-off or special distributions. */
+export const HIGH_YIELD_PERCENT = 20
+
+export function highYieldNote(code: string, valuation: Valuation | null): string | null {
+  const percent = valuation?.dividend_yield_percent
+  if (percent === null || percent === undefined || percent <= HIGH_YIELD_PERCENT) return null
+  const dividend = valuation?.dividend_per_share
+  const year = valuation?.dividend_year
+  return `${code}: dividend yield ${percent}% is unusually high${dividend ? ` (${dividend} TWD per share${year ? ` for ${year}` : ''})` : ''}; it usually reflects a one-off or special distribution, so do not treat it as recurring.`
 }
 
 export type MonthlyRevenue = {
@@ -121,7 +140,58 @@ export function parseValuation(row: Row | undefined): Valuation | null {
     pe_ratio: number(row, 'PEratio', 'PriceEarningRatio'),
     dividend_yield_percent: number(row, 'DividendYield', 'YieldRatio'),
     pb_ratio: number(row, 'PBratio', 'PriceBookRatio'),
+    dividend_per_share: number(row, 'DividendPerShare'),
+    dividend_year: null,
+    earnings_period: null,
   }
+}
+
+/** "115/3" (ROC year / quarter) -> "2026 Q3" */
+function rocQuarter(value: unknown): string | null {
+  const match = /^(\d{3})\/([1-4])$/.exec(String(value ?? '').trim())
+  return match ? `${Number(match[1]) + 1911} Q${match[2]}` : null
+}
+
+/**
+ * TWSE BWIBBU_d (daily valuation table). Unlike the OpenAPI dataset it says
+ * which dividend year the yield uses and which quarter the P/E's EPS runs to.
+ */
+export function parseTwseValuationTable(data: unknown): Map<string, { name: string | null; valuation: Valuation }> {
+  const response = (data ?? {}) as { stat?: unknown; date?: unknown; fields?: unknown; data?: unknown }
+  if (typeof response.stat !== 'string' || response.stat.toLowerCase() !== 'ok') {
+    throw new Error(`TWSE valuation table unavailable: ${String(response.stat)}`)
+  }
+  const fields = Array.isArray(response.fields) ? (response.fields as string[]) : []
+  const column = (name: string) => fields.findIndex((field) => field.includes(name))
+  const index = {
+    code: column('證券代號'), name: column('證券名稱'), close: column('收盤價'), yield: column('殖利率'),
+    year: column('股利年度'), pe: column('本益比'), pb: column('股價淨值比'), period: column('財報年'),
+  }
+  if (Object.values(index).some((value) => value < 0) || !Array.isArray(response.data)) {
+    throw new Error('Unexpected TWSE valuation table layout')
+  }
+  const date = marketDate(response.date)
+  const result = new Map<string, { name: string | null; valuation: Valuation }>()
+  for (const row of response.data as unknown[][]) {
+    const code = String(row[index.code] ?? '').trim().toUpperCase()
+    if (!code) continue
+    const close = strictNumber(row[index.close])
+    const yieldPercent = strictNumber(row[index.yield])
+    const year = Number(row[index.year])
+    result.set(code, {
+      name: String(row[index.name] ?? '').trim() || null,
+      valuation: {
+        date,
+        pe_ratio: strictNumber(row[index.pe]),
+        dividend_yield_percent: yieldPercent,
+        pb_ratio: strictNumber(row[index.pb]),
+        dividend_per_share: close !== null && yieldPercent ? round((close * yieldPercent) / 100) : null,
+        dividend_year: Number.isInteger(year) && year > 0 ? year + 1911 : null,
+        earnings_period: rocQuarter(row[index.period]),
+      },
+    })
+  }
+  return result
 }
 
 export function parseRevenue(row: Row | undefined): MonthlyRevenue | null {
@@ -170,6 +240,7 @@ const cache = new Map<string, { expiresAt: number; rows: Promise<Map<string, Row
 
 export function resetFundamentalsCache(): void {
   cache.clear()
+  valuationCache.clear()
 }
 
 /** Loads one full-market dataset, indexed by security code. */
@@ -195,8 +266,28 @@ export function loadDataset(market: Market, path: string, signal?: AbortSignal):
   return rows
 }
 
-export const valuationPath = (market: Market) => PATHS[market].valuation
 export const revenuePath = (market: Market) => PATHS[market].revenue
+
+const TWSE_VALUATION_URL = 'https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d?date=&selectType=ALL&response=json'
+const valuationCache = new Map<Market, { expiresAt: number; value: Promise<Map<string, { name: string | null; valuation: Valuation }>> }>()
+
+/** Latest valuations for every security on a market (an empty date asks TWSE for the latest trading day). */
+export function loadValuations(market: Market, signal?: AbortSignal) {
+  const hit = valuationCache.get(market)
+  if (hit && hit.expiresAt > Date.now()) return hit.value
+  const value =
+    market === 'tse'
+      ? requestJson<unknown>(TWSE_VALUATION_URL, { signal, timeoutMs: 30_000 }).then(parseTwseValuationTable)
+      : loadDataset(market, PATHS[market].valuation, signal).then(
+          (rows) =>
+            new Map(
+              [...rows].map(([code, entries]) => [code, { name: nameOf(entries[0]), valuation: parseValuation(entries[0])! }])
+            )
+        )
+  valuationCache.set(market, { expiresAt: Date.now() + DATASET_TTL_MS, value })
+  value.catch(() => valuationCache.delete(market))
+  return value
+}
 
 async function settle<T>(label: string, promise: Promise<T>, warnings: string[]): Promise<T | null> {
   try {
@@ -215,7 +306,7 @@ export async function loadFundamentals(
 ): Promise<{ results: Map<string, Fundamentals>; warnings: string[] }> {
   const warnings: string[] = []
   const [valuations, revenues] = await Promise.all([
-    settle('Valuation (P/E, yield, P/B)', loadDataset(market, PATHS[market].valuation, signal), warnings),
+    settle('Valuation (P/E, yield, P/B)', loadValuations(market, signal), warnings),
     settle('Monthly revenue', loadDataset(market, PATHS[market].revenue, signal), warnings),
   ])
 
@@ -242,21 +333,23 @@ export async function loadFundamentals(
 
   const results = new Map<string, Fundamentals>()
   for (const code of codes) {
-    const valuation = valuations?.get(code)?.[0]
+    const valuation = valuations?.get(code)
     const revenue = revenues?.get(code)?.[0]
     const income = incomes.get(code)
     if (!valuation && !revenue && !income) continue
+    const note = highYieldNote(code, valuation?.valuation ?? null)
+    if (note) warnings.push(note)
     if (!income) {
       warnings.push(
-        `${code}: the exchange OpenAPI has no income statement for this company (financial holding companies are currently missing upstream).`
+        `${code}: the exchange OpenAPI currently publishes no income statement for this company.`
       )
     }
     results.set(code, {
       code,
-      name: nameOf(valuation) ?? nameOf(revenue) ?? nameOf(income),
+      name: valuation?.name ?? nameOf(revenue) ?? nameOf(income),
       market,
       industry: text(revenue, '產業別'),
-      valuation: parseValuation(valuation),
+      valuation: valuation?.valuation ?? null,
       monthly_revenue: parseRevenue(revenue),
       income_statement: parseIncome(income),
     })

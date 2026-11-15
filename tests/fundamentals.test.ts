@@ -1,14 +1,30 @@
 import { resetDailyQuotesCache } from '../src/core/daily-quotes.js'
-import { parseIncome, parseRevenue, parseValuation, resetFundamentalsCache } from '../src/core/fundamentals.js'
+import {
+  highYieldNote,
+  parseIncome,
+  parseRevenue,
+  parseTwseValuationTable,
+  parseValuation,
+  resetFundamentalsCache,
+} from '../src/core/fundamentals.js'
 import { resetSecurityCache } from '../src/core/securities.js'
 import { getFundamentalsTool } from '../src/tools/get-fundamentals.js'
 import { screenStocksTool } from '../src/tools/screen-stocks.js'
 import { stubFetch, tdccRecords } from './fixtures.js'
 
-// Real OpenAPI rows (2026-11-15), trimmed to the fields used.
-const twseValuation = { Date: '1151113', Code: '2330', Name: '台積電', PEratio: '23.92', DividendYield: '0.94', PBratio: '8.71' }
+// Real TWSE BWIBBU_d table (2026-11-13), trimmed to a few rows.
+const TWSE_VALUATION_FIELDS = ['證券代號', '證券名稱', '收盤價', '殖利率(%)', '股利年度', '本益比', '股價淨值比', '財報年/季']
+const twseValuationTable = (rows: unknown[][]) => ({ stat: 'OK', date: '20261113', fields: TWSE_VALUATION_FIELDS, data: rows })
+const twse2330Valuation = ['2330', '台積電', '2,350.00', '0.94', 114, '23.92', '8.71', '115/3']
+const twse2317Valuation = ['2317', '鴻海', '241.00', '2.98', 114, '15.89', '1.77', '115/2']
+// Real TPEx OpenAPI rows (2026-11-15).
 const tpexValuation = {
-  Date: '1151113', SecuritiesCompanyCode: '6488', CompanyName: '環球晶', PriceEarningRatio: '35.47', YieldRatio: '1.22', PriceBookRatio: '2.28',
+  Date: '1151113', SecuritiesCompanyCode: '6488', CompanyName: '環球晶', PriceEarningRatio: '35.47', DividendPerShare: '7.70000000',
+  YieldRatio: '1.22', PriceBookRatio: '2.28',
+}
+const tpex5314Valuation = {
+  Date: '1151113', SecuritiesCompanyCode: '5314', CompanyName: '世紀*', PriceEarningRatio: '5.42', DividendPerShare: '31.61882035',
+  YieldRatio: '125.97', PriceBookRatio: '4.05',
 }
 const twseRevenue = {
   資料年月: '11510', 公司代號: '2330', 公司名稱: '台積電', 產業別: '半導體業', '營業收入-當月營收': '586890319',
@@ -25,9 +41,32 @@ const bankIncome = {
 }
 
 describe('fundamentals parsing', () => {
-  it('reads both exchanges\' valuation field names', () => {
-    expect(parseValuation(twseValuation)).toEqual({ date: '2026-11-13', pe_ratio: 23.92, dividend_yield_percent: 0.94, pb_ratio: 8.71 })
-    expect(parseValuation(tpexValuation)).toEqual({ date: '2026-11-13', pe_ratio: 35.47, dividend_yield_percent: 1.22, pb_ratio: 2.28 })
+  it('reads the TWSE daily table with the dividend year and the P/E earnings period', () => {
+    const table = parseTwseValuationTable(twseValuationTable([twse2330Valuation, twse2317Valuation]))
+    expect(table.get('2330')).toEqual({
+      name: '台積電',
+      valuation: {
+        date: '2026-11-13', pe_ratio: 23.92, dividend_yield_percent: 0.94, pb_ratio: 8.71,
+        dividend_per_share: 22.09, dividend_year: 2025, earnings_period: '2026 Q3',
+      },
+    })
+    // 鴻海's P/E still runs to Q2 although Q3 results exist: the lag is now visible.
+    expect(table.get('2317')?.valuation.earnings_period).toBe('2026 Q2')
+    expect(() => parseTwseValuationTable({ stat: 'OK', fields: ['x'], data: [] })).toThrow('Unexpected TWSE valuation table layout')
+  })
+
+  it('reads the TPEx dividend per share', () => {
+    expect(parseValuation(tpexValuation)).toEqual({
+      date: '2026-11-13', pe_ratio: 35.47, dividend_yield_percent: 1.22, pb_ratio: 2.28,
+      dividend_per_share: 7.7, dividend_year: null, earnings_period: null,
+    })
+  })
+
+  it('flags yields that are almost certainly one-off distributions', () => {
+    expect(highYieldNote('5314', parseValuation(tpex5314Valuation))).toBe(
+      '5314: dividend yield 125.97% is unusually high (31.61882035 TWD per share); it usually reflects a one-off or special distribution, so do not treat it as recurring.'
+    )
+    expect(highYieldNote('6488', parseValuation(tpexValuation))).toBeNull()
   })
 
   it('converts monthly revenue from thousands of TWD', () => {
@@ -67,8 +106,8 @@ describe('get_fundamentals', () => {
   it('loads each market\'s datasets and stops walking income templates once all codes are found', async () => {
     const { calls } = stubFetch({
       'openapi.tdcc.com.tw': () => tdccRecords,
+      'www.twse.com.tw': () => twseValuationTable([twse2330Valuation]),
       'openapi.twse.com.tw': (url) => {
-        if (url.pathname.endsWith('BWIBBU_ALL')) return [twseValuation]
         if (url.pathname.endsWith('t187ap05_L')) return [twseRevenue]
         if (url.pathname.endsWith('t187ap06_L_ci')) return [ciIncome]
         return []
@@ -86,7 +125,7 @@ describe('get_fundamentals', () => {
     const twseIncomeCalls = calls.filter((url) => url.pathname.includes('t187ap06_L_'))
     expect(twseIncomeCalls.map((url) => url.pathname.split('_').pop())).toEqual(['ci'])
     expect(result.warnings).toEqual([
-      '6488: the exchange OpenAPI has no income statement for this company (financial holding companies are currently missing upstream).',
+      '6488: the exchange OpenAPI currently publishes no income statement for this company.',
     ])
   })
 })
@@ -103,7 +142,13 @@ describe('screen_stocks', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-11-13T08:00:00Z'))
     stubFetch({
-      'www.twse.com.tw': () => ({
+      'www.twse.com.tw': (url) => url.pathname.endsWith('BWIBBU_d')
+        ? twseValuationTable([
+            twse2330Valuation,
+            ['1102', '亞泥', '35.75', '6.43', 114, '11.07', '0.90', '115/3'],
+            ['2603', '長榮', '257.50', '6.21', 114, '7.01', '1.10', '115/3'],
+          ])
+        : ({
         stat: 'OK',
         tables: [{
           title: '每日收盤行情',
@@ -116,16 +161,7 @@ describe('screen_stocks', () => {
         }],
       }),
       'www.tpex.org.tw': (url) => (url.pathname.startsWith('/openapi/') ? [] : { stat: 'ok', tables: [{ data: [] }] }),
-      'openapi.twse.com.tw': (url) => {
-        if (url.pathname.endsWith('BWIBBU_ALL')) {
-          return [
-            twseValuation,
-            { Date: '1151113', Code: '1102', Name: '亞泥', PEratio: '11.07', DividendYield: '6.43', PBratio: '0.9' },
-            { Date: '1151113', Code: '2603', Name: '長榮', PEratio: '7.01', DividendYield: '6.21', PBratio: '1.1' },
-          ]
-        }
-        return [twseRevenue, { ...twseRevenue, 公司代號: '2603', '營業收入-去年同月增減(%)': '96.13' }]
-      },
+      'openapi.twse.com.tw': () => [twseRevenue, { ...twseRevenue, 公司代號: '2603', '營業收入-去年同月增減(%)': '96.13' }],
     })
   })
 
