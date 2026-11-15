@@ -34,6 +34,7 @@ function twseResponse() {
         data: [
           ['1.一般股票', '856,049,429,190', '4,653,337,676', '3,260,695'],
           ['4.ETF', '90,605,828,329', '4,502,275,737', '883,637'],
+          ['7.認購(售)權證', '2,632,940,500', '3,182,265,000', '98,941'],
           ['總計(1~15)', '951,580,008,082', '12,361,786,586', '4,257,328'],
         ],
       },
@@ -156,7 +157,12 @@ describe('market tools', () => {
       date: '2026-11-13',
       key_indices: [{ name: '發行量加權股價指數' }, { name: '臺灣50指數' }],
       breadth: { advancing: 811 },
-      turnover: { total: { turnover: 951_580_008_082 }, stocks: { trades: 3_260_695 } },
+      turnover: {
+        total: { turnover: 951_580_008_082 },
+        stocks: { trades: 3_260_695 },
+        // total - stocks - etf - warrants
+        other: { turnover: 951_580_008_082 - 856_049_429_190 - 90_605_828_329 - 2_632_940_500 },
+      },
       institutional: null,
     })
     expect((result.sectors as { name: string }[]).map((sector) => sector.name)).toEqual(['半導體類指數', '航運類指數', '鋼鐵類指數'])

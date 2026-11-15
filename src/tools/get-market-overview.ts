@@ -50,7 +50,7 @@ export const getMarketOverviewTool: Tool<Input> = {
       key_indices: { type: 'array', items: indexSchema },
       sectors: { type: 'array', items: indexSchema, description: 'Sorted by change_percent, best first' },
       breadth: { type: ['object', 'null'], description: 'Common stocks only' },
-      turnover: { type: 'object', description: 'TWD by category: total, stocks, etf, warrants' },
+      turnover: { type: 'object', description: 'TWD by category: total = stocks + etf + warrants + other (TDRs, innovation board, ETNs, ...)' },
       institutional: { type: ['object', 'null'], description: 'TWSE net buy/sell in TWD; null if not published yet' },
       notes: { type: 'array', items: { type: 'string' } },
     },
@@ -84,6 +84,15 @@ export const getMarketOverviewTool: Tool<Input> = {
     for (const row of data.turnover) {
       const key = TURNOVER_ROWS[row.category]
       if (key) turnover[key] = { turnover: row.turnover, volume: row.volume, trades: row.trades }
+    }
+    // Remaining categories (TDRs, innovation board, ETNs, ...) so the parts add up to the total.
+    const parts = ['stocks', 'etf', 'warrants'].map((key) => turnover[key]).filter(Boolean)
+    if (turnover.total && parts.length === 3) {
+      turnover.other = {
+        turnover: turnover.total.turnover - parts.reduce((total, part) => total + part.turnover, 0),
+        volume: turnover.total.volume - parts.reduce((total, part) => total + part.volume, 0),
+        trades: turnover.total.trades - parts.reduce((total, part) => total + part.trades, 0),
+      }
     }
 
     const institutional = await loadSummary(date, signal).catch((error: unknown) => {
