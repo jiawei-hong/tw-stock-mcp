@@ -28,6 +28,13 @@ export async function findTradingDay<T>(
     if (!isIsoDate(requested)) {
       throw new Error(`date must be a real date in YYYY-MM-DD form, got "${requested}"`)
     }
+    const today = taipeiToday()
+    if (requested > today) {
+      // Exchanges answer a future date with their own untranslated error; say it plainly instead.
+      throw new Error(
+        `date ${requested} is in the future (today is ${today} in Taipei). Use today or an earlier date, or omit date for the latest trading day.`
+      )
+    }
     const data = await load(requested)
     return data === null ? { date: null, tried: requested } : { date: requested, data, fellBack: false }
   }

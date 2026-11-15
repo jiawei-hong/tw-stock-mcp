@@ -134,6 +134,14 @@ describe('get_institutional_trading', () => {
       'No institutional data for 2026-11-14: not a trading day, or not published yet'
     )
   })
+
+  it('rejects a future date without asking the exchange', async () => {
+    const { calls } = routes()
+    await expect(getInstitutionalTool.run({ date: '2027-01-04' }, context)).rejects.toThrow(
+      'date 2027-01-04 is in the future (today is 2026-11-15 in Taipei)'
+    )
+    expect(calls).toHaveLength(0)
+  })
 })
 
 describe('get_institutional_trading over several days', () => {
