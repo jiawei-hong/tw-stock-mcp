@@ -8,6 +8,9 @@ import { resetSecurityCache } from '../src/core/securities.js'
 import { getInstitutionalTool } from '../src/tools/get-institutional.js'
 import { stubFetch } from './fixtures.js'
 
+// The pause between days only spaces out real requests; skip it in tests.
+vi.mock('node:timers/promises', () => ({ setTimeout: () => Promise.resolve() }))
+
 // Real rows from TWSE T86 and TPEx 3itrade_hedge_result for 2026-11-13.
 const twse2330 = [
   '2330', '台積電          ', '19,372,551', '21,990,621', '-2,618,070', '0', '0', '0', '2,947,069', '1,000',
@@ -196,5 +199,53 @@ describe('get_institutional_trading over several days', () => {
     const result = await getInstitutionalTool.run({ symbols: ['2330'] }, context)
     expect(result).toMatchObject({ start_date: '2026-11-13', end_date: '2026-11-13', trading_days: 1 })
     expect((result.stocks as object[])[0]).not.toHaveProperty('daily')
+  })
+})
+
+describe('get_institutional_trading with start', () => {
+  const context = { signal: new AbortController().signal }
+
+  beforeEach(() => {
+    resetInstitutionalCache()
+    resetSecurityCache()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-15T04:00:00Z')) // Sunday in Taipei
+    // Every weekday trades except the 11-12 holiday; 2330 nets 100 shares a day.
+    stubFetch({
+      'www.twse.com.tw': (url) => {
+        const date = url.searchParams.get('date') ?? ''
+        if (date === '20261112' || url.pathname.endsWith('BFI82U')) return NO_DATA
+        return { stat: 'OK', data: [twseRow('2330', '台積電', 100)] }
+      },
+      'www.tpex.org.tw': () => ({ stat: 'ok', tables: [{ data: [] }] }),
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('covers every trading day from start, skipping holidays', async () => {
+    const result = await getInstitutionalTool.run({ symbols: ['2330'], start: '2026-11-10' }, context)
+    expect(result).toMatchObject({ start_date: '2026-11-10', end_date: '2026-11-13', trading_days: 3 })
+    const [tsmc] = result.stocks as { total_net: number; daily: { date: string }[] }[]
+    expect(tsmc.total_net).toBe(300)
+    expect(tsmc.daily.map((day) => day.date)).toEqual(['2026-11-10', '2026-11-11', '2026-11-13'])
+  })
+
+  it('starts at the next trading day when start is a holiday', async () => {
+    const result = await getInstitutionalTool.run({ symbols: ['2330'], start: '2026-11-12' }, context)
+    expect(result).toMatchObject({ start_date: '2026-11-13', trading_days: 1 })
+  })
+
+  it('explains invalid or too long periods', async () => {
+    await expect(getInstitutionalTool.run({ start: '2026-11-10', days: 3 }, context)).rejects.toThrow('Pass either start or days, not both.')
+    await expect(getInstitutionalTool.run({ start: '2026-11-14' }, context)).rejects.toThrow(
+      'start (2026-11-14) is after the last trading day with data (2026-11-13).'
+    )
+    await expect(getInstitutionalTool.run({ start: '2026-09-01' }, context)).rejects.toThrow(
+      '2026-09-01 to 2026-11-13 spans more than 23 trading days; use a later start or split the period.'
+    )
   })
 })

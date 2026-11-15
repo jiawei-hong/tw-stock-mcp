@@ -7,7 +7,7 @@ import {
   type MarketFlow,
   type MarketSummary,
 } from '../core/institutional.js'
-import { type Market, normaliseCode } from '../core/market.js'
+import { isIsoDate, type Market, normaliseCode } from '../core/market.js'
 import { resolveSecurity } from '../core/resolve.js'
 import { classifySecurity, DEFAULT_SECURITY_TYPES } from '../core/securities.js'
 import { findTradingDay, noTradingDataMessage, previousTradingDays } from '../core/trading-day.js'
@@ -17,6 +17,7 @@ type RankBy = 'total' | 'foreign' | 'trust' | 'dealer'
 type Input = {
   symbols?: string[]
   date?: string
+  start?: string
   days?: number
   market?: Market
   rank_by?: RankBy
@@ -40,7 +41,8 @@ const RANK_FIELD: Record<RankBy, NetField> = {
   dealer: 'dealer_net',
 }
 
-const MAX_DAYS = 20
+/** About one calendar month of trading days. */
+const MAX_DAYS = 23
 /** Pause between days so a 20-day request is not a burst against the exchanges. */
 const DAY_GAP_MS = 200
 
@@ -129,7 +131,7 @@ export const getInstitutionalTool: Tool<Input> = {
   title: 'Get institutional investor trading (三大法人)',
   description: [
     'Net buying/selling by Taiwan\'s three institutional investor groups (三大法人): foreign investors (外資), investment trusts (投信) and dealers (自營商), for TWSE and TPEx.',
-    'Covers one trading day by default; set `days` (up to 20) for a period such as "this week" or "recently", and figures become totals over those trading days, with a `daily` breakdown per stock.',
+    'Covers one trading day by default. For a period, set `start` (e.g. the 1st of the month for "this month", the Monday for "this week") or `days` (number of trading days, e.g. 5 for "recently"), up to 23 trading days; figures then become totals over the period, with a `daily` breakdown per stock.',
     'With `symbols`: per-stock net shares for each group. Without `symbols`: the TWSE market-wide buy/sell totals in TWD plus the top net buyers and sellers (stocks and ETFs, both markets) ranked by `rank_by`.',
     'All per-stock figures are in shares (positive = net buy); total_net = foreign_net + trust_net + dealer_net.',
     'Rankings are by shares, so low-priced stocks rank higher than their TWD value suggests.',
@@ -150,12 +152,17 @@ export const getInstitutionalTool: Tool<Input> = {
         pattern: '^\\d{4}-\\d{2}-\\d{2}$',
         description: 'Last trading date of the period, YYYY-MM-DD. Default: latest available.',
       },
+      start: {
+        type: 'string',
+        pattern: '^\\d{4}-\\d{2}-\\d{2}$',
+        description: 'First date of the period, YYYY-MM-DD; every trading day from here to `date` is included (max 23). Do not combine with days.',
+      },
       days: {
         type: 'integer',
         minimum: 1,
         maximum: MAX_DAYS,
         default: 1,
-        description: 'Number of trading days ending at `date`, e.g. 5 for about a week, 20 for about a month. Default 1.',
+        description: 'Number of trading days ending at `date`, e.g. 5 for about a week. Default 1. Do not combine with start.',
       },
       market: { type: 'string', enum: ['tse', 'otc'], description: 'Restrict rankings or symbol lookup to one market.' },
       rank_by: {
@@ -193,7 +200,13 @@ export const getInstitutionalTool: Tool<Input> = {
   },
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
-  async run({ symbols, date: requested, days = 1, market, rank_by = 'total', limit = 10 }, { signal }) {
+  async run({ symbols, date: requested, start, days: requestedDays, market, rank_by = 'total', limit = 10 }, { signal }) {
+    if (start !== undefined) {
+      if (requestedDays !== undefined) throw new ToolError('Pass either start or days, not both.')
+      if (!isIsoDate(start)) throw new ToolError(`start must be a real date in YYYY-MM-DD form, got "${start}"`)
+    }
+    // With start, walk back to it; one extra day detects a period that is too long.
+    const days = start === undefined ? requestedDays ?? 1 : MAX_DAYS + 1
     const loadTse = (day: string) => loadInstitutional(day, 'tse', signal)
     let found
     try {
@@ -206,10 +219,21 @@ export const getInstitutionalTool: Tool<Input> = {
     }
 
     // TWSE decides which days were trading days; newest first.
-    const tseDays = await previousTradingDays({ date: found.date, data: found.data }, days, async (day) => {
-      await delay(DAY_GAP_MS, undefined, { signal })
-      return loadTse(day)
-    })
+    if (start !== undefined && start > found.date) {
+      throw new ToolError(`start (${start}) is after the last trading day with data (${found.date}).`)
+    }
+    const tseDays = await previousTradingDays(
+      { date: found.date, data: found.data },
+      days,
+      async (day) => {
+        await delay(DAY_GAP_MS, undefined, { signal })
+        return loadTse(day)
+      },
+      start
+    )
+    if (start !== undefined && tseDays.length > MAX_DAYS) {
+      throw new ToolError(`${start} to ${found.date} spans more than ${MAX_DAYS} trading days; use a later start or split the period.`)
+    }
     const markets: Market[] = market ? [market] : ['tse', 'otc']
     const loaded: { date: string; rows: InstitutionalRow[] }[] = []
     for (const day of tseDays) {
@@ -223,8 +247,8 @@ export const getInstitutionalTool: Tool<Input> = {
     const startDate = loaded.at(-1)!.date
     const notes: string[] = []
     if (found.fellBack) notes.push(`Latest available trading day: ${endDate}.`)
-    if (loaded.length < days) notes.push(`Only ${loaded.length} trading days with data were found; figures cover ${startDate} to ${endDate}.`)
-    if (days > 1) notes.push(`Figures are net totals over ${loaded.length} trading days (${startDate} to ${endDate}).`)
+    if (start === undefined && loaded.length < days) notes.push(`Only ${loaded.length} trading days with data were found; figures cover ${startDate} to ${endDate}.`)
+    if (loaded.length > 1) notes.push(`Figures are net totals over ${loaded.length} trading days (${startDate} to ${endDate}).`)
     const period = { date: endDate, start_date: startDate, end_date: endDate, trading_days: loaded.length, unit: 'shares' }
 
     if (symbols) {
@@ -245,7 +269,7 @@ export const getInstitutionalTool: Tool<Input> = {
           codes.push(code)
         }
       }
-      const totals = aggregate(loaded, days > 1, new Set(codes))
+      const totals = aggregate(loaded, loaded.length > 1, new Set(codes))
       const stocks = codes.flatMap((code) => {
         const entry = totals.get(code)
         if (entry) return [entry]

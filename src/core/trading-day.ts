@@ -50,7 +50,9 @@ export async function findTradingDay<T>(
 export async function previousTradingDays<T>(
   first: { date: string; data: T },
   count: number,
-  load: (date: string) => Promise<T | null>
+  load: (date: string) => Promise<T | null>,
+  /** Stop before walking past this date (YYYY-MM-DD). */
+  notBefore?: string
 ): Promise<{ date: string; data: T }[]> {
   const days = [first]
   let date = first.date
@@ -58,6 +60,7 @@ export async function previousTradingDays<T>(
   const maxCalendarDays = count * 2 + 14
   for (let step = 0; days.length < count && step < maxCalendarDays; step += 1) {
     date = previousDay(date)
+    if (notBefore !== undefined && date < notBefore) break
     if (isWeekend(date)) continue
     const data = await load(date)
     if (data !== null) days.push({ date, data })
