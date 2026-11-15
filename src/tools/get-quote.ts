@@ -39,7 +39,7 @@ export const getQuoteTool: Tool<Input> = {
   description: [
     'Near-realtime quotes for Taiwan stocks and ETFs from TWSE MIS, covering both TWSE (上市) and TPEx (上櫃).',
     'Accepts codes ("2330", "2330.TW", "6488.TWO") or exact Traditional Chinese names ("台積電"); the market is detected automatically.',
-    'Prices are TWD. `volume` is the day\'s accumulated volume in lots (1 lot = 1,000 shares), or shares when odd_lot is true.',
+    'Prices are TWD. `volume` is the day\'s accumulated volume in lots (1 lot = 1,000 shares), or shares when odd_lot is true, for the regular session only: end-of-day tools such as get_history report the exchange\'s daily total, which also includes odd-lot, after-hours fixed-price and other trades, so it is usually a few percent higher.',
     '`price` is null when there has been no trade yet; check `status` and the best bid/ask instead.',
     'Inputs that cannot be resolved are listed in `unresolved` with suggestions rather than failing the whole call.',
     'Outside trading hours (09:00-13:30 Asia/Taipei, weekdays) the last session\'s values are returned with status "previous_session".',
@@ -89,7 +89,7 @@ export const getQuoteTool: Tool<Input> = {
             low: nullableNumber,
             limit_up: nullableNumber,
             limit_down: nullableNumber,
-            volume: nullableNumber,
+            volume: { ...nullableNumber, description: 'Regular session only; lower than the end-of-day daily total' },
             volume_unit: { type: 'string', enum: ['lots', 'shares'] },
             best_bids: { type: 'array', items: levelSchema },
             best_asks: { type: 'array', items: levelSchema },
