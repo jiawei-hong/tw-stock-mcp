@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI only reads the repository.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Supported LTS lines; .nvmrc pins the release line (26).
+        node: [22, 24, 26]
+    steps:
+      # Actions are pinned to commit SHAs; the comment shows the release.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Installs the pnpm version pinned (with sha512) in package.json.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      # --frozen-lockfile fails if pnpm-lock.yaml would change;
+      # pnpm-workspace.yaml blocks install scripts and enforces the 7-day
+      # minimum release age and the trust policy.
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: Smoke test the stdio server
+        run: |
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | node build/index.js > responses.jsonl
+          node -e '
+            const lines = require("fs").readFileSync("responses.jsonl", "utf8").trim().split("\n").map(JSON.parse)
+            const init = lines.find((m) => m.id === 1)
+            const list = lines.find((m) => m.id === 2)
+            if (init?.result?.protocolVersion !== "2025-11-25") throw new Error("initialize failed: " + JSON.stringify(init))
+            const tools = list?.result?.tools ?? []
+            if (tools.length !== 11) throw new Error("expected 11 tools, got " + tools.length)
+            console.log("OK:", tools.map((tool) => tool.name).join(", "))
+          '
