@@ -1,0 +1,43 @@
+{
+  "name": "tw-stock-mcp",
+  "version": "0.1.0",
+  "description": "Zero-dependency MCP server for Taiwan stock market data (TWSE / TPEx)",
+  "type": "module",
+  "bin": "build/index.js",
+  "files": [
+    "build"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiawei-hong/tw-stock-mcp.git"
+  },
+  "homepage": "https://github.com/jiawei-hong/tw-stock-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/jiawei-hong/tw-stock-mcp/issues"
+  },
+  "packageManager": "pnpm@12.17.0+sha512.b8d223ebec04b580a89ed206daa71d1bccb6a1ee1d52efa95cc3b0db75271561df8f0d8e2c43add39c5ec08018af7a8a95108e7090f95a29f88727b7a40fd53d",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepack": "pnpm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "taiwan",
+    "stock",
+    "twse",
+    "tpex"
+  ],
+  "author": "Jiawei-Hong",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "24.10.13",
+    "typescript": "5.9.3",
+    "vitest": "4.0.18"
+  }
+}

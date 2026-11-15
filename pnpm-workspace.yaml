@@ -1,0 +1,25 @@
+# Supply-chain hardening (pnpm 12). See https://pnpm.io/supply-chain-security
+
+# Dependencies never run install scripts unless approved here. strictDepBuilds
+# makes an unreviewed build script fail the install instead of being skipped.
+strictDepBuilds: true
+allowBuilds:
+  # Comes with vitest; its postinstall only verifies the platform binary.
+  esbuild: false
+
+# Refuse versions published less than 7 days ago (minutes); fail rather than
+# fall back to a newer version. Most malicious releases are pulled sooner.
+minimumReleaseAge: 10080
+minimumReleaseAgeStrict: true
+# A package without publish dates cannot be checked, so treat that as an error.
+minimumReleaseAgeIgnoreMissingTime: false
+
+# Fail if a package's trust evidence (trusted publisher, provenance) is weaker
+# than its earlier releases had. Also checks the pinned pnpm itself.
+trustPolicy: no-downgrade
+
+# Transitive dependencies may only come from the registry, not git or tarballs.
+blockExoticSubdeps: true
+
+# `pnpm add` writes exact versions, never ^ranges.
+saveExact: true
