@@ -1,0 +1,144 @@
+import { EVENT_KINDS, type EventKind, loadEvents } from '../core/events.js'
+import { isIsoDate, type Market, normaliseCode, taipeiToday } from '../core/market.js'
+import { resolveSecurity } from '../core/resolve.js'
+import { type Tool, ToolError } from '../mcp/server.js'
+import { describeUnresolved } from './shared.js'
+
+type Input = {
+  symbols?: string[]
+  kinds?: EventKind[]
+  market?: Market
+  start?: string
+  end?: string
+  limit?: number
+}
+
+const DEFAULT_PAST_DAYS = 14
+const DEFAULT_FUTURE_DAYS = 45
+
+function shift(date: string, days: number): string {
+  const day = new Date(`${date}T00:00:00Z`)
+  day.setUTCDate(day.getUTCDate() + days)
+  return day.toISOString().slice(0, 10)
+}
+
+export const getMarketEventsTool: Tool<Input> = {
+  name: 'get_market_events',
+  title: 'Get market and corporate events',
+  description: [
+    'Upcoming and recent events on TWSE and TPEx: market holidays (休市), ex-dividend / ex-rights dates (除權息) with cash dividend per share, disposition stocks under restricted trading (處置股), attention notices for unusual trading (注意股), and trading halts (暫停交易).',
+    'Filter by `symbols`, `kinds` and a date window; events whose period overlaps the window are included. Default window: 14 days ago to 45 days ahead; giving only `start` or `end` keeps the other default.',
+    'Exchanges only publish ex-dividend schedules a few weeks ahead and keep recent dispositions and notices; this is not a full history.',
+  ].join(' '),
+  inputSchema: {
+    type: 'object',
+    properties: {
+      symbols: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 50,
+        items: { type: 'string', minLength: 1, maxLength: 50 },
+        description: 'Only events for these codes or exact names. Holidays are always included unless excluded via kinds.',
+      },
+      kinds: {
+        type: 'array',
+        minItems: 1,
+        maxItems: EVENT_KINDS.length,
+        items: { type: 'string', enum: EVENT_KINDS },
+        description: `Default: all of ${JSON.stringify(EVENT_KINDS)}.`,
+      },
+      market: { type: 'string', enum: ['tse', 'otc'], description: 'Omit for both markets.' },
+      start: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Window start, YYYY-MM-DD.' },
+      end: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Window end, YYYY-MM-DD.' },
+      limit: { type: 'integer', minimum: 1, maximum: 500, default: 100, description: 'Maximum events (default 100).' },
+    },
+    additionalProperties: false,
+  },
+  outputSchema: {
+    type: 'object',
+    properties: {
+      start: { type: 'string' },
+      end: { type: 'string' },
+      total: { type: 'integer' },
+      truncated: { type: 'boolean' },
+      events: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: EVENT_KINDS },
+            date: { type: 'string' },
+            end_date: { type: ['string', 'null'] },
+            code: { type: ['string', 'null'] },
+            name: { type: 'string' },
+            market: { type: ['string', 'null'], enum: ['tse', 'otc', null] },
+            details: {
+              type: 'object',
+              description:
+                'holiday: description, market_open. dividend: type (cash/stock/cash_and_stock), cash_dividend_per_share (TWD), stock_dividend_ratio. disposition: reason, measure, announced. attention: reason. halt: halted_on, resumes_on.',
+            },
+          },
+          required: ['kind', 'date', 'name', 'details'],
+        },
+      },
+      unresolved: { type: 'array', items: { type: 'object' } },
+      warnings: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['start', 'end', 'total', 'truncated', 'events', 'unresolved', 'warnings'],
+  },
+  annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
+
+  async run({ symbols, kinds = [...EVENT_KINDS], market, start, end, limit = 100 }, { signal }) {
+    const today = taipeiToday()
+    // Defaults stay anchored on today: only `end` given still starts 14 days ago.
+    const from = start ?? shift(end !== undefined && end < today ? end : today, -DEFAULT_PAST_DAYS)
+    const to = end ?? shift(start !== undefined && start > today ? start : today, DEFAULT_FUTURE_DAYS)
+    for (const [label, value] of [['start', from], ['end', to]] as const) {
+      if (!isIsoDate(value)) throw new ToolError(`${label} must be a real date in YYYY-MM-DD form, got "${value}"`)
+    }
+    if (from > to) throw new ToolError(`start (${from}) is after end (${to}).`)
+
+    const unresolved: { input: string; reason: string }[] = []
+    let codes: Set<string> | null = null
+    if (symbols) {
+      codes = new Set()
+      for (const raw of symbols) {
+        const input = raw.trim()
+        const code = normaliseCode(input)
+        if (code) {
+          codes.add(code)
+          continue
+        }
+        const resolution = await resolveSecurity(input, market)
+        if (resolution.ok) codes.add(resolution.code)
+        else unresolved.push({ input, reason: describeUnresolved(input, resolution) })
+      }
+    }
+
+    const markets: Market[] = market ? [market] : ['tse', 'otc']
+    let loaded
+    try {
+      loaded = await loadEvents(kinds, markets, signal)
+    } catch (error) {
+      throw new ToolError(error instanceof Error ? error.message : String(error))
+    }
+
+    // A halt with no resumption date yet is still in effect.
+    const finish = (event: (typeof loaded.events)[number]) =>
+      event.end_date ?? (event.kind === 'halt' && event.details.halted_on && !event.details.resumes_on ? to : event.date)
+    const events = loaded.events
+      .filter((event) => event.date <= to && finish(event) >= from)
+      .filter((event) => !codes || event.code === null || codes.has(event.code))
+      .sort((left, right) => left.date.localeCompare(right.date) || (left.code ?? '').localeCompare(right.code ?? ''))
+
+    return {
+      start: from,
+      end: to,
+      total: events.length,
+      truncated: events.length > limit,
+      events: events.slice(0, limit),
+      unresolved,
+      warnings: loaded.warnings,
+    }
+  },
+}
