@@ -171,3 +171,20 @@ export function previousMonth(month: string): string {
   date.setUTCMonth(date.getUTCMonth() - 1)
   return date.toISOString().slice(0, 7)
 }
+
+/**
+ * Loads the window's months plus, when none of them contains a trading day
+ * before `window.start`, the previous month, so the summary can measure change
+ * from the close before the window.
+ */
+export async function loadBarsWithReference(
+  code: string,
+  market: Market,
+  window: HistoryWindow,
+  signal?: AbortSignal
+): Promise<DailyBar[]> {
+  const bars = await loadBars(code, market, window.months, signal)
+  if (!bars.length || bars.some((bar) => bar.date < window.start)) return bars
+  const earlier = await loadBars(code, market, [previousMonth(window.months[0])], signal)
+  return [...earlier, ...bars]
+}

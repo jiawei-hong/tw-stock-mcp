@@ -15,7 +15,14 @@ export type Summary = {
   last_date: string
   first_close: number
   last_close: number
-  /** last_close - first_close */
+  /**
+   * The close the window's change is measured from: the last trading day before
+   * the window. `reference_date` is null when it was derived from the first
+   * bar's own change, and equals `first_date` for a security listed in the window.
+   */
+  reference_date: string | null
+  reference_close: number
+  /** last_close - reference_close */
   change: number
   change_percent: number
   high: { price: number; date: string }
@@ -125,15 +132,26 @@ export function summarise(bars: readonly DailyBar[], start: string): Summary | n
   }
   const volumes = inWindow.map((bar) => bar.volume)
   const totalVolume = sum(volumes)
-  const change = round(last.close - first.close, 4)
+
+  // Measure from the close before the window, as "how did it do this month"
+  // means; measuring from the first close in the window drops that day's move.
+  const prior = bars.filter((bar) => bar.date < start).at(-1)
+  const reference = prior
+    ? { date: prior.date as string | null, close: prior.close }
+    : first.change !== null
+      ? { date: null, close: round(first.close - first.change, 4) }
+      : { date: first.date as string | null, close: first.close }
+  const change = round(last.close - reference.close, 4)
   return {
     trading_days: inWindow.length,
     first_date: first.date,
     last_date: last.date,
     first_close: first.close,
     last_close: last.close,
+    reference_date: reference.date,
+    reference_close: reference.close,
     change,
-    change_percent: round((change / first.close) * 100),
+    change_percent: round((change / reference.close) * 100),
     high,
     low,
     average_daily_volume: totalVolume === null ? null : Math.round(totalVolume / inWindow.length),

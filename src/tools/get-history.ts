@@ -4,6 +4,7 @@ import {
   dateWindow,
   type HistoryWindow,
   loadBars,
+  loadBarsWithReference,
   previousMonth,
   type Range,
   RANGES,
@@ -52,7 +53,7 @@ export const getHistoryTool: Tool<Input> = {
     'Daily OHLCV history for one Taiwan stock or ETF (TWSE or TPEx), with a summary and optional moving averages.',
     'Choose a window with `range` (1m, 3m, 6m, 1y back from today) or `start`/`end` dates (max 366 days).',
     'Bars default to daily for windows up to about 3 months and weekly beyond that; pass `interval` to override.',
-    '`summary` already contains change over the window, high/low with dates and average volume, so you rarely need to compute these.',
+    '`summary` gives the change from `reference_close` (the close of the last trading day before the window, as "how did it do this month" means), high/low with dates and average volume.',
     'Units are normalised across both exchanges: prices in TWD, `volume` in shares, `turnover` in TWD. Dates are Asia/Taipei trading days.',
     'Data is end-of-day and updates after the close (about 14:30 Taipei); use get_quote for intraday prices.',
   ].join(' '),
@@ -104,7 +105,23 @@ export const getHistoryTool: Tool<Input> = {
       end: { type: 'string' },
       summary: {
         type: ['object', 'null'],
-        description: 'Null when there were no trading days in the window.',
+        description:
+          'Null when there were no trading days in the window. change and change_percent are measured from reference_close (the last close before the window, dated reference_date), not from first_close.',
+        properties: {
+          trading_days: { type: 'integer' },
+          first_date: { type: 'string' },
+          last_date: { type: 'string' },
+          first_close: { type: 'number' },
+          last_close: { type: 'number' },
+          reference_date: { type: ['string', 'null'] },
+          reference_close: { type: 'number' },
+          change: { type: 'number' },
+          change_percent: { type: 'number' },
+          high: { type: 'object', properties: { price: { type: 'number' }, date: { type: 'string' } } },
+          low: { type: 'object', properties: { price: { type: 'number' }, date: { type: 'string' } } },
+          average_daily_volume: { type: ['number', 'null'], description: 'Shares' },
+          total_turnover: { type: ['number', 'null'], description: 'TWD' },
+        },
       },
       bars: {
         type: 'array',
@@ -147,7 +164,7 @@ export const getHistoryTool: Tool<Input> = {
     let bars: DailyBar[] = []
     for (const candidate of candidates) {
       market = candidate
-      bars = await loadBars(resolution.code, candidate, span.months, signal)
+      bars = await loadBarsWithReference(resolution.code, candidate, span, signal)
       if (bars.length) break
     }
 

@@ -1,7 +1,7 @@
 import { summarise } from '../core/analysis.js'
 import { loadEvents } from '../core/events.js'
 import { loadFundamentals } from '../core/fundamentals.js'
-import { loadBars, rangeWindow } from '../core/history.js'
+import { loadBarsWithReference, rangeWindow } from '../core/history.js'
 import { loadInstitutional } from '../core/institutional.js'
 import { type Market, taipeiToday } from '../core/market.js'
 import { fetchQuotes } from '../core/quotes.js'
@@ -84,7 +84,7 @@ export const getStockOverviewTool: Tool<Input> = {
       section('Price summary', async () => {
         if (!market) throw new Error('market unknown')
         const window = rangeWindow('1m')
-        return summarise(await loadBars(code, market, window.months, signal), window.start)
+        return summarise(await loadBarsWithReference(code, market, window, signal), window.start)
       }),
       section('Fundamentals', async () => {
         if (!market) throw new Error('market unknown')

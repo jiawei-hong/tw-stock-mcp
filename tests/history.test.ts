@@ -112,14 +112,25 @@ describe('analysis', () => {
     ])
   })
 
-  it('summarises only the window', () => {
+  it('summarises only the window, measuring change from the close before it', () => {
     const bars = [bar('2026-11-06', 50), bar('2026-11-09', 100), bar('2026-11-10', 80), bar('2026-11-11', 110)]
     expect(summarise(bars, '2026-11-09')).toEqual({
       trading_days: 3, first_date: '2026-11-09', last_date: '2026-11-11', first_close: 100, last_close: 110,
-      change: 10, change_percent: 10, high: { price: 111, date: '2026-11-11' }, low: { price: 79, date: '2026-11-10' },
+      reference_date: '2026-11-06', reference_close: 50, change: 60, change_percent: 120,
+      high: { price: 111, date: '2026-11-11' }, low: { price: 79, date: '2026-11-10' },
       average_daily_volume: 1000, total_turnover: 290_000,
     })
     expect(summarise(bars, '2026-12-01')).toBeNull()
+  })
+
+  it('derives the reference from the first bar change when no earlier bar exists', () => {
+    expect(summarise([bar('2026-11-09', 100, { change: -5 }), bar('2026-11-10', 110)], '2026-11-01')).toMatchObject({
+      reference_date: null, reference_close: 105, change: 5, change_percent: 4.76,
+    })
+    // Listed inside the window: no earlier close at all.
+    expect(summarise([bar('2026-11-09', 100), bar('2026-11-10', 110)], '2026-11-01')).toMatchObject({
+      reference_date: '2026-11-09', reference_close: 100, change: 10,
+    })
   })
 })
 
