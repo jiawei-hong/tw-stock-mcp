@@ -9,6 +9,8 @@ import {
 export type Resolution =
   | { ok: true; code: string; market: Market | null; name: string | null }
   | { ok: false; reason: 'name_not_found' | 'ambiguous_name' | 'not_listed'; suggestions: Security[] }
+  /** The security exists, but only on the market the caller did not ask for. */
+  | { ok: false; reason: 'other_market'; requested: Market; suggestions: Security[] }
 
 const MAX_SUGGESTIONS = 5
 
@@ -46,6 +48,13 @@ export async function resolveSecurity(input: string, market?: Market): Promise<R
       return { ok: true, code: tse.code, market: tse.market, name: tse.name }
     }
     return { ok: false, reason: 'ambiguous_name', suggestions: matches.slice(0, MAX_SUGGESTIONS) }
+  }
+
+  if (market) {
+    const elsewhere = securities.filter((security) => (code ? security.code === code : security.name === text))
+    if (elsewhere.length) {
+      return { ok: false, reason: 'other_market', requested: market, suggestions: elsewhere.slice(0, MAX_SUGGESTIONS) }
+    }
   }
 
   const suggestions = rankSecurities(securities, code ?? text, {

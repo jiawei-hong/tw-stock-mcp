@@ -200,5 +200,9 @@ describe('get_history', () => {
     await expect(getHistoryTool.run({ symbol: '2330', range: '1m', start: '2026-11-01' }, context)).rejects.toThrow(
       'either range or start/end'
     )
+    // Listed, but on the other market than the one forced by the caller.
+    await expect(getHistoryTool.run({ symbol: '2330', market: 'otc' }, context)).rejects.toThrow(
+      '"2330" is not listed on market "otc", but it is listed as 2330 台積電 (tse, stock). Retry without market, or with that market.'
+    )
   })
 })
