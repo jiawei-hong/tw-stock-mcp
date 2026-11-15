@@ -124,6 +124,21 @@ describe('get_market_events', () => {
     ])
   })
 
+  it('reports what each dataset covered so an empty result can be interpreted', async () => {
+    const result = await getMarketEventsTool.run({ kinds: ['attention', 'dividend'] }, context)
+    const coverage = result.coverage as { kind: string; market: string; from: string | null; records: number; scope: string }[]
+    expect(coverage).toEqual(
+      expect.arrayContaining([
+        { kind: 'attention', market: 'tse', scope: 'Latest trading day only.', from: null, to: null, records: 0 },
+        expect.objectContaining({ kind: 'dividend', market: 'tse', from: '2026-12-04', to: '2026-12-04', records: 1 }),
+        expect.objectContaining({ kind: 'dividend', market: 'otc', from: '2027-01-05', records: 1 }),
+      ])
+    )
+    // The failed TPEx attention source is a warning, not a coverage entry.
+    expect(coverage.some((entry) => entry.kind === 'attention' && entry.market === 'otc')).toBe(false)
+    expect(result.warnings).toHaveLength(1)
+  })
+
   it('rejects an inverted window', async () => {
     await expect(getMarketEventsTool.run({ start: '2026-12-01', end: '2026-11-01' }, context)).rejects.toThrow('is after end')
   })

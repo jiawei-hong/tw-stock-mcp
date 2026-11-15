@@ -24,7 +24,7 @@ export const getStockOverviewTool: Tool<Input> = {
   name: 'get_stock_overview',
   title: 'Get a one-call stock overview',
   description: [
-    'Everything about one Taiwan stock in a single call: the latest quote, a 1-month price summary, fundamentals (valuation, monthly revenue, latest income statement), the latest day of institutional trading (三大法人), and events from 14 days ago to 45 days ahead (ex-dividend, disposition, attention, halts).',
+    'Everything about one Taiwan stock in a single call: the latest quote, a 1-month price summary, fundamentals (valuation, monthly revenue, latest income statement), the latest day of institutional trading (三大法人), and events from 14 days ago to 45 days ahead (ex-dividend, disposition, attention, halts; attention notices only exist for the latest trading day, see `events_coverage`).',
     'Use this first when asked about a specific stock; call the individual tools only for more detail (e.g. get_history for a longer window).',
     'Sections that fail to load are null and explained in `warnings`; the rest are still returned.',
   ].join(' '),
@@ -51,6 +51,11 @@ export const getStockOverviewTool: Tool<Input> = {
         description: 'Net shares by group for `date`, same shape as a get_institutional_trading row plus date',
       },
       events: { type: 'array', items: { type: 'object' } },
+      events_coverage: {
+        type: 'array',
+        description: 'Date range each event dataset contained (see get_market_events coverage). Attention notices cover the latest trading day only.',
+        items: { type: 'object' },
+      },
       warnings: { type: 'array', items: { type: 'string' } },
     },
     required: ['code', 'quote', 'price_summary_1m', 'fundamentals', 'institutional', 'events', 'warnings'],
@@ -80,6 +85,7 @@ export const getStockOverviewTool: Tool<Input> = {
     if (quoteResult && !quote) warnings.push('Quote unavailable: the exchange returned no realtime data for this code.')
 
     const today = taipeiToday()
+    let eventsCoverage: Awaited<ReturnType<typeof loadEvents>>['coverage'] = []
     const [history, fundamentals, institutional, events] = await Promise.all([
       section('Price summary', async () => {
         if (!market) throw new Error('market unknown')
@@ -107,6 +113,7 @@ export const getStockOverviewTool: Tool<Input> = {
         warnings.push(...result.warnings.map((warning) => `Events: ${warning}`))
         const from = shift(today, -14)
         const to = shift(today, 45)
+        eventsCoverage = result.coverage
         return result.events
           .filter((event) => event.code === code && event.date <= to && (event.end_date ?? event.date) >= from)
           .sort((left, right) => left.date.localeCompare(right.date))
@@ -122,6 +129,7 @@ export const getStockOverviewTool: Tool<Input> = {
       fundamentals,
       institutional,
       events: events ?? [],
+      events_coverage: eventsCoverage,
       warnings,
     }
   },

@@ -154,16 +154,25 @@ function haltEvent(code: string, name: string, market: Market, halted: string | 
   }
 }
 
-const SOURCES: { kind: EventKind; market: Market | null; url: string; parse: (rows: Row[]) => MarketEvent[] }[] = [
-  { kind: 'holiday', market: null, url: 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule', parse: parseHolidays },
-  { kind: 'dividend', market: 'tse', url: 'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL', parse: (rows) => parseDividends(rows, 'tse') },
-  { kind: 'disposition', market: 'tse', url: 'https://openapi.twse.com.tw/v1/announcement/punish', parse: (rows) => parseDispositions(rows, 'tse') },
-  { kind: 'attention', market: 'tse', url: 'https://openapi.twse.com.tw/v1/announcement/notice', parse: (rows) => parseAttention(rows, 'tse') },
-  { kind: 'halt', market: 'tse', url: 'https://openapi.twse.com.tw/v1/exchangeReport/TWTAWU', parse: (rows) => parseHalts(rows, 'tse') },
-  { kind: 'dividend', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost', parse: (rows) => parseDividends(rows, 'otc') },
-  { kind: 'disposition', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_disposal_information', parse: (rows) => parseDispositions(rows, 'otc') },
-  { kind: 'attention', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_information', parse: (rows) => parseAttention(rows, 'otc') },
-  { kind: 'halt', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_spendi_history', parse: (rows) => parseHalts(rows, 'otc') },
+type Source = {
+  kind: EventKind
+  market: Market | null
+  url: string
+  /** What the exchange keeps in this dataset (observed 2026-11-15). */
+  scope: string
+  parse: (rows: Row[]) => MarketEvent[]
+}
+
+const SOURCES: Source[] = [
+  { kind: 'holiday', market: null, url: 'https://openapi.twse.com.tw/v1/holidaySchedule/holidaySchedule', scope: 'The calendar year TWSE currently publishes; the rest of the current year may be missing.', parse: parseHolidays },
+  { kind: 'dividend', market: 'tse', url: 'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL', scope: 'Upcoming ex-dividend/ex-rights schedule, a few weeks ahead.', parse: (rows) => parseDividends(rows, 'tse') },
+  { kind: 'disposition', market: 'tse', url: 'https://openapi.twse.com.tw/v1/announcement/punish', scope: 'Recently announced dispositions only.', parse: (rows) => parseDispositions(rows, 'tse') },
+  { kind: 'attention', market: 'tse', url: 'https://openapi.twse.com.tw/v1/announcement/notice', scope: 'Latest trading day only.', parse: (rows) => parseAttention(rows, 'tse') },
+  { kind: 'halt', market: 'tse', url: 'https://openapi.twse.com.tw/v1/exchangeReport/TWTAWU', scope: 'Current and recent halts only.', parse: (rows) => parseHalts(rows, 'tse') },
+  { kind: 'dividend', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_exright_prepost', scope: 'Recent and upcoming ex-dividend/ex-rights schedule, a few weeks either side.', parse: (rows) => parseDividends(rows, 'otc') },
+  { kind: 'disposition', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_disposal_information', scope: 'Recently announced dispositions only.', parse: (rows) => parseDispositions(rows, 'otc') },
+  { kind: 'attention', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_trading_warning_information', scope: 'Latest trading day only.', parse: (rows) => parseAttention(rows, 'otc') },
+  { kind: 'halt', market: 'otc', url: 'https://www.tpex.org.tw/openapi/v1/tpex_spendi_history', scope: 'Current calendar year.', parse: (rows) => parseHalts(rows, 'otc') },
 ]
 
 const TTL_MS = 30 * 60_000
@@ -173,7 +182,7 @@ export function resetEventsCache(): void {
   cache.clear()
 }
 
-function loadSource(source: (typeof SOURCES)[number], signal?: AbortSignal): Promise<MarketEvent[]> {
+function loadSource(source: Source, signal?: AbortSignal): Promise<MarketEvent[]> {
   const hit = cache.get(source.url)
   if (hit && hit.expiresAt > Date.now()) return hit.events
   const events = requestJson<unknown>(source.url, { signal }).then((data) => {
@@ -185,20 +194,43 @@ function loadSource(source: (typeof SOURCES)[number], signal?: AbortSignal): Pro
   return events
 }
 
+/** The date range a dataset actually contained, so "none found" can be read correctly. */
+export type Coverage = {
+  kind: EventKind
+  market: Market | null
+  scope: string
+  /** Earliest and latest event dates in the dataset; null when it is empty. */
+  from: string | null
+  to: string | null
+  records: number
+}
+
 /** Loads the requested kinds for the requested markets; failed sources become warnings. */
 export async function loadEvents(
   kinds: readonly EventKind[],
   markets: readonly Market[],
   signal?: AbortSignal
-): Promise<{ events: MarketEvent[]; warnings: string[] }> {
+): Promise<{ events: MarketEvent[]; coverage: Coverage[]; warnings: string[] }> {
   const selected = SOURCES.filter(
     (source) => kinds.includes(source.kind) && (source.market === null || markets.includes(source.market))
   )
   const results = await Promise.allSettled(selected.map((source) => loadSource(source, signal)))
   const warnings: string[] = []
+  const coverage: Coverage[] = []
   const events = results.flatMap((result, index) => {
-    if (result.status === 'fulfilled') return result.value
     const source = selected[index]
+    if (result.status === 'fulfilled') {
+      const dates = result.value.map((event) => event.date).sort()
+      coverage.push({
+        kind: source.kind,
+        market: source.market,
+        scope: source.scope,
+        from: dates[0] ?? null,
+        to: dates.at(-1) ?? null,
+        records: dates.length,
+      })
+      return result.value
+    }
     warnings.push(
       `${source.market ? source.market.toUpperCase() : 'Market'} ${source.kind} data unavailable: ${
         result.reason instanceof Error ? result.reason.message : String(result.reason)
@@ -209,5 +241,5 @@ export async function loadEvents(
   if (selected.length && warnings.length === selected.length) {
     throw new Error(`All event sources failed: ${warnings.join('; ')}`)
   }
-  return { events, warnings }
+  return { events, coverage, warnings }
 }

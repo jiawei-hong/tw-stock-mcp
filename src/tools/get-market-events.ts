@@ -28,7 +28,7 @@ export const getMarketEventsTool: Tool<Input> = {
   description: [
     'Upcoming and recent events on TWSE and TPEx: market holidays (休市), ex-dividend / ex-rights dates (除權息) with cash dividend per share, disposition stocks under restricted trading (處置股), attention notices for unusual trading (注意股), and trading halts (暫停交易).',
     'Filter by `symbols`, `kinds` and a date window; events whose period overlaps the window are included. Default window: 14 days ago to 45 days ahead; giving only `start` or `end` keeps the other default.',
-    'Exchanges only publish ex-dividend schedules a few weeks ahead and keep recent dispositions and notices; this is not a full history.',
+    'Each exchange dataset covers only a limited period, reported in `coverage` per kind and market: attention notices are for the latest trading day only, dispositions are recent announcements, ex-dividend schedules run a few weeks ahead, and holidays cover only the calendar year TWSE currently publishes. No event outside a dataset\'s from/to range means no data, not that nothing happened.',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -81,10 +81,26 @@ export const getMarketEventsTool: Tool<Input> = {
           required: ['kind', 'date', 'name', 'details'],
         },
       },
+      coverage: {
+        type: 'array',
+        description: 'Per dataset: what it keeps (scope) and the event dates it actually contained (from/to, null when empty).',
+        items: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: EVENT_KINDS },
+            market: { type: ['string', 'null'], enum: ['tse', 'otc', null] },
+            scope: { type: 'string' },
+            from: { type: ['string', 'null'] },
+            to: { type: ['string', 'null'] },
+            records: { type: 'integer' },
+          },
+          required: ['kind', 'market', 'scope', 'from', 'to', 'records'],
+        },
+      },
       unresolved: { type: 'array', items: { type: 'object' } },
       warnings: { type: 'array', items: { type: 'string' } },
     },
-    required: ['start', 'end', 'total', 'truncated', 'events', 'unresolved', 'warnings'],
+    required: ['start', 'end', 'total', 'truncated', 'events', 'coverage', 'unresolved', 'warnings'],
   },
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
@@ -137,6 +153,7 @@ export const getMarketEventsTool: Tool<Input> = {
       total: events.length,
       truncated: events.length > limit,
       events: events.slice(0, limit),
+      coverage: loaded.coverage,
       unresolved,
       warnings: loaded.warnings,
     }
