@@ -1,8 +1,8 @@
 import { EVENT_KINDS, type EventKind, loadEvents } from '../core/events.js'
 import { isIsoDate, type Market, normaliseCode, taipeiToday } from '../core/market.js'
-import { resolveSecurity } from '../core/resolve.js'
+import { listedElsewhere, resolveSecurity } from '../core/resolve.js'
 import { type Tool, ToolError } from '../mcp/server.js'
-import { describeUnresolved } from './shared.js'
+import { describeOtherMarket, describeUnresolved } from './shared.js'
 
 type Input = {
   symbols?: string[]
@@ -122,7 +122,10 @@ export const getMarketEventsTool: Tool<Input> = {
         const input = raw.trim()
         const code = normaliseCode(input)
         if (code) {
-          codes.add(code)
+          // A code on the other market would otherwise look like "no events".
+          const elsewhere = market ? await listedElsewhere(code, market) : []
+          if (elsewhere.length) unresolved.push({ input, reason: describeOtherMarket(input, market!, elsewhere) })
+          else codes.add(code)
           continue
         }
         const resolution = await resolveSecurity(input, market)

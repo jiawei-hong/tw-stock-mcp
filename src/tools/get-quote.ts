@@ -1,5 +1,6 @@
 import { normaliseCode, type Market } from '../core/market.js'
 import { fetchQuotes } from '../core/quotes.js'
+import { listedElsewhere } from '../core/resolve.js'
 import {
   DEFAULT_SECURITY_TYPES,
   SECURITY_TYPES,
@@ -13,7 +14,7 @@ type Input = { symbols: string[]; market?: Market; odd_lot?: boolean }
 
 type Unresolved = {
   input: string
-  reason: 'name_not_found' | 'ambiguous_name' | 'no_quote'
+  reason: 'name_not_found' | 'ambiguous_name' | 'no_quote' | 'other_market'
   suggestions: Security[]
 }
 
@@ -109,7 +110,11 @@ export const getQuoteTool: Tool<Input> = {
           type: 'object',
           properties: {
             input: { type: 'string' },
-            reason: { type: 'string', enum: ['name_not_found', 'ambiguous_name', 'no_quote'] },
+            reason: {
+              type: 'string',
+              enum: ['name_not_found', 'ambiguous_name', 'no_quote', 'other_market'],
+              description: 'other_market: not listed on the requested `market`; suggestions show where it is listed.',
+            },
             suggestions: { type: 'array', items: securityOutputSchema },
           },
           required: ['input', 'reason', 'suggestions'],
@@ -143,8 +148,11 @@ export const getQuoteTool: Tool<Input> = {
         }
       )
       const exact = matches.filter((security) => security.name === input)
+      const elsewhere = exact.length === 0 && market ? await listedElsewhere(input, market) : []
       if (exact.length === 1) {
         if (!inputByCode.has(exact[0].code)) inputByCode.set(exact[0].code, input)
+      } else if (elsewhere.length) {
+        unresolved.push({ input, reason: 'other_market', suggestions: elsewhere })
       } else {
         const suggestions =
           exact.length > 1
@@ -164,7 +172,9 @@ export const getQuoteTool: Tool<Input> = {
 
     for (const code of result.missing) {
       const input = inputByCode.get(code) ?? code
-      unresolved.push({ input, reason: 'no_quote', suggestions: await suggest(input, market) })
+      const elsewhere = market ? await listedElsewhere(code, market) : []
+      if (elsewhere.length) unresolved.push({ input, reason: 'other_market', suggestions: elsewhere })
+      else unresolved.push({ input, reason: 'no_quote', suggestions: await suggest(input, market) })
     }
 
     return {

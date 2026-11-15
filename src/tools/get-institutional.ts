@@ -8,10 +8,11 @@ import {
   type MarketSummary,
 } from '../core/institutional.js'
 import { isIsoDate, type Market, normaliseCode } from '../core/market.js'
-import { resolveSecurity } from '../core/resolve.js'
+import { listedElsewhere, resolveSecurity } from '../core/resolve.js'
 import { classifySecurity, DEFAULT_SECURITY_TYPES } from '../core/securities.js'
 import { findTradingDay, noTradingDataMessage, previousTradingDays } from '../core/trading-day.js'
 import { type Tool, ToolError } from '../mcp/server.js'
+import { describeOtherMarket, describeUnresolved } from './shared.js'
 
 type RankBy = 'total' | 'foreign' | 'trust' | 'dealer'
 type Input = {
@@ -260,25 +261,34 @@ export const getInstitutionalTool: Tool<Input> = {
         let code = normaliseCode(input)
         if (!code) {
           const resolution = await resolveSecurity(input, market)
-          code = resolution.ok ? resolution.code : null
+          if (!resolution.ok) {
+            unresolved.push({ input, reason: describeUnresolved(input, resolution) })
+            continue
+          }
+          code = resolution.code
         }
-        if (!code) {
-          unresolved.push({ input, reason: 'Not a code or exact name; use search_security.' })
-        } else if (!inputByCode.has(code)) {
+        if (!inputByCode.has(code)) {
           inputByCode.set(code, input)
           codes.push(code)
         }
       }
       const totals = aggregate(loaded, loaded.length > 1, new Set(codes))
-      const stocks = codes.flatMap((code) => {
+      const stocks: Aggregate[] = []
+      for (const code of codes) {
         const entry = totals.get(code)
-        if (entry) return [entry]
+        if (entry) {
+          stocks.push(entry)
+          continue
+        }
+        const input = inputByCode.get(code) ?? code
+        const elsewhere = market ? await listedElsewhere(code, market) : []
         unresolved.push({
-          input: inputByCode.get(code) ?? code,
-          reason: 'No institutional trading reported for this code in the period (not listed, suspended, or a warrant).',
+          input,
+          reason: elsewhere.length
+            ? describeOtherMarket(input, market!, elsewhere)
+            : 'No institutional trading reported for this code in the period (not listed, suspended, or a warrant).',
         })
-        return []
-      })
+      }
       return { ...period, stocks, unresolved, notes }
     }
 

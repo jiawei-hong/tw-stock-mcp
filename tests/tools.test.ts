@@ -88,6 +88,20 @@ describe('get_quote', () => {
     ])
   })
 
+  it('says where a security is listed when the requested market is wrong', async () => {
+    stubFetch({ 'openapi.tdcc.com.tw': () => tdccRecords, 'mis.twse.com.tw': misRoute([misRow()]) })
+    const result = await getQuoteTool.run({ symbols: ['0050', '0051'], market: 'otc' }, context)
+
+    expect(result.quotes).toEqual([])
+    expect(result.unresolved).toEqual([
+      { input: '0050', reason: 'other_market', suggestions: [{ code: '0050', name: '元大台灣50', market: 'tse', type: 'etf' }] },
+      { input: '0051', reason: 'no_quote', suggestions: [] },
+    ])
+    expect(await getQuoteTool.run({ symbols: ['台積電'], market: 'otc' }, context)).toMatchObject({
+      unresolved: [{ input: '台積電', reason: 'other_market', suggestions: [{ code: '2330', market: 'tse' }] }],
+    })
+  })
+
   it('does not call the directory when only codes are given', async () => {
     const { calls } = stubFetch({ 'mis.twse.com.tw': misRoute([misRow()]) })
     await getQuoteTool.run({ symbols: ['2330'] }, context)

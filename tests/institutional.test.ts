@@ -6,7 +6,7 @@ import {
 } from '../src/core/institutional.js'
 import { resetSecurityCache } from '../src/core/securities.js'
 import { getInstitutionalTool } from '../src/tools/get-institutional.js'
-import { stubFetch } from './fixtures.js'
+import { stubFetch, tdccRecords } from './fixtures.js'
 
 // The pause between days only spaces out real requests; skip it in tests.
 vi.mock('node:timers/promises', () => ({ setTimeout: () => Promise.resolve() }))
@@ -97,6 +97,7 @@ describe('get_institutional_trading', () => {
 
   const routes = () =>
     stubFetch({
+      'openapi.tdcc.com.tw': () => tdccRecords,
       'www.twse.com.tw': (url) => {
         if (url.searchParams.get('date') !== '20261113') return NO_DATA
         if (url.pathname.endsWith('BFI82U')) return { stat: 'OK', data: summaryRows }
@@ -133,6 +134,17 @@ describe('get_institutional_trading', () => {
     await expect(getInstitutionalTool.run({ date: '2026-11-14' }, context)).rejects.toThrow(
       'No institutional data for 2026-11-14: not a trading day, or not published yet'
     )
+  })
+
+  it('says where a security is listed when the requested market is wrong', async () => {
+    routes()
+    const result = await getInstitutionalTool.run({ symbols: ['2330', '台積電', '6488'], market: 'otc' }, context)
+    const wrongMarket = (input: string) =>
+      `"${input}" is not listed on market "otc", but it is listed as 2330 台積電 (tse, stock). Retry without market, or with that market.`
+    expect(result).toMatchObject({
+      stocks: [{ code: '6488' }],
+      unresolved: [{ input: '台積電', reason: wrongMarket('台積電') }, { input: '2330', reason: wrongMarket('2330') }],
+    })
   })
 
   it('rejects a future date without asking the exchange', async () => {

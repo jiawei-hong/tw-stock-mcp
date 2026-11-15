@@ -124,6 +124,14 @@ describe('get_market_events', () => {
     ])
   })
 
+  it('flags a code that is listed on the other market instead of returning nothing', async () => {
+    const result = await getMarketEventsTool.run({ symbols: ['2330', '環球晶'], market: 'otc', kinds: ['dividend'] }, context)
+    expect(result.events).toEqual([])
+    expect(result.unresolved).toEqual([
+      { input: '2330', reason: '"2330" is not listed on market "otc", but it is listed as 2330 台積電 (tse, stock). Retry without market, or with that market.' },
+    ])
+  })
+
   it('reports what each dataset covered so an empty result can be interpreted', async () => {
     const result = await getMarketEventsTool.run({ kinds: ['attention', 'dividend'] }, context)
     const coverage = result.coverage as { kind: string; market: string; from: string | null; records: number; scope: string }[]

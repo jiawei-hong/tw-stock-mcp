@@ -15,6 +15,25 @@ export type Resolution =
 const MAX_SUGGESTIONS = 5
 
 /**
+ * Where a code or exact name is listed when it is not on `market`: the listings
+ * on the other market, or none if it is on `market` after all, unknown, or the
+ * directory is unreachable. Best effort, for explaining an empty result.
+ */
+export async function listedElsewhere(input: string, market: Market): Promise<Security[]> {
+  const text = input.trim()
+  const code = normaliseCode(text)
+  let securities: Security[]
+  try {
+    securities = await getSecurities()
+  } catch {
+    return []
+  }
+  const matches = securities.filter((security) => (code ? security.code === code : security.name === text))
+  if (matches.some((security) => security.market === market)) return []
+  return matches.slice(0, MAX_SUGGESTIONS)
+}
+
+/**
  * Resolves a code ("2330", "2330.TW") or exact name ("台積電") to one security.
  * When the directory is unreachable a code still resolves, with `market: null`,
  * so callers can fall back to probing both exchanges.
