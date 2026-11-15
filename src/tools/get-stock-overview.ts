@@ -24,7 +24,7 @@ export const getStockOverviewTool: Tool<Input> = {
   name: 'get_stock_overview',
   title: 'Get a one-call stock overview',
   description: [
-    'Everything about one Taiwan stock in a single call: the latest quote, a 1-month price summary, fundamentals (valuation, monthly revenue, latest income statement), the latest day of institutional trading (三大法人), and events from 14 days ago to 45 days ahead (ex-dividend, disposition, attention, halts; attention notices only exist for the latest trading day, see `events_coverage`).',
+    'Everything about one Taiwan stock in a single call: the latest quote, a rolling 1-month price summary, fundamentals (valuation, monthly revenue, latest income statement), the latest day of institutional trading (三大法人), and events from 14 days ago to 45 days ahead (ex-dividend, disposition, attention, halts; attention notices only exist for the latest trading day, see `events_coverage`).',
     'Use this first when asked about a specific stock; call the individual tools only for more detail (e.g. get_history for a longer window).',
     'Sections that fail to load are null and explained in `warnings`; the rest are still returned.',
   ].join(' '),
@@ -43,8 +43,15 @@ export const getStockOverviewTool: Tool<Input> = {
       code: { type: 'string' },
       name: { type: ['string', 'null'] },
       market: { type: ['string', 'null'], enum: ['tse', 'otc', null] },
-      quote: { type: ['object', 'null'], description: 'Same shape as a get_quote quote' },
-      price_summary_1m: { type: ['object', 'null'], description: 'Same shape as get_history summary' },
+      quote: {
+        type: ['object', 'null'],
+        description: 'Same shape as a get_quote quote: volume is in lots for the regular session only, so it is lower than the end-of-day volume in shares.',
+      },
+      price_summary_1m: {
+        type: ['object', 'null'],
+        description:
+          'Same shape as get_history summary for a rolling month ending today (not month-to-date; use get_history with start for that). change is from reference_close; average_daily_volume is in shares, total_turnover in TWD.',
+      },
       fundamentals: { type: ['object', 'null'], description: 'Same shape as a get_fundamentals company' },
       institutional: {
         type: ['object', 'null'],

@@ -52,7 +52,10 @@ export const getFundamentalsTool: Tool<Input> = {
                 pe_ratio: { ...nullableNumber, description: 'Price / EPS of the four quarters ending at earnings_period' },
                 dividend_yield_percent: { ...nullableNumber, description: 'dividend_per_share / close' },
                 pb_ratio: nullableNumber,
-                dividend_per_share: { ...nullableNumber, description: 'TWD; derived as close x yield for TWSE' },
+                dividend_per_share: {
+                  ...nullableNumber,
+                  description: 'TWD for the latest annual dividend, which can combine several payments, so it can differ from the next ex-dividend amount in get_market_events. Derived as close x yield for TWSE.',
+                },
                 dividend_year: { type: ['integer', 'null'], description: 'Year of the dividend used (TWSE only)' },
                 earnings_period: { type: ['string', 'null'], description: 'e.g. "2026 Q3": last quarter in the P/E (TWSE only)' },
               },

@@ -138,7 +138,10 @@ export const getHistoryTool: Tool<Input> = {
             volume: { ...nullableNumber, description: 'Shares' },
             turnover: { ...nullableNumber, description: 'TWD' },
             trades: nullableNumber,
-            moving_averages: { type: 'object', description: 'e.g. {"ma5": 1020.5, "ma20": null}' },
+            moving_averages: {
+              type: 'object',
+              description: 'e.g. {"ma5": 1020.5, "ma20": null}. Always averages of daily closes (ma20 = 20 trading days), also on week/month bars, taken at end_date.',
+            },
           },
           required: ['date', 'end_date', 'close'],
         },
