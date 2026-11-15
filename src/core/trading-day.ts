@@ -42,6 +42,29 @@ export async function findTradingDay<T>(
   return { date: null, tried: `the last ${MAX_LOOKBACK_DAYS} days` }
 }
 
+/**
+ * Starting from a trading day that has data, walks back over earlier weekdays
+ * and returns up to `count` trading days (newest first) for which `load`
+ * returns data. Holidays return null and are skipped.
+ */
+export async function previousTradingDays<T>(
+  first: { date: string; data: T },
+  count: number,
+  load: (date: string) => Promise<T | null>
+): Promise<{ date: string; data: T }[]> {
+  const days = [first]
+  let date = first.date
+  // Allow for weekends and long holidays such as the Lunar New Year break.
+  const maxCalendarDays = count * 2 + 14
+  for (let step = 0; days.length < count && step < maxCalendarDays; step += 1) {
+    date = previousDay(date)
+    if (isWeekend(date)) continue
+    const data = await load(date)
+    if (data !== null) days.push({ date, data })
+  }
+  return days
+}
+
 export function noTradingDataMessage(what: string, tried: string, publishedAround: string): string {
   return `No ${what} for ${tried}: not a trading day, or not published yet (published around ${publishedAround} Taipei). Try an earlier date or omit date.`
 }

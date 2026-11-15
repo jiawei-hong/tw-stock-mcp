@@ -132,3 +132,69 @@ describe('get_institutional_trading', () => {
     )
   })
 })
+
+describe('get_institutional_trading over several days', () => {
+  const context = { signal: new AbortController().signal }
+
+  beforeEach(() => {
+    resetInstitutionalCache()
+    resetSecurityCache()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-15T04:00:00Z')) // Sunday in Taipei
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  // 11-13 and 11-11 are trading days; 11-12 is treated as a holiday.
+  // 2317 only trades on 11-13, so it must get an explicit zero for 11-11.
+  const routes = () =>
+    stubFetch({
+      'www.twse.com.tw': (url) => {
+        const date = url.searchParams.get('date')
+        if (url.pathname.endsWith('BFI82U')) return date === '20261113' || date === '20261111' ? { stat: 'OK', data: summaryRows } : NO_DATA
+        if (date === '20261113') return { stat: 'OK', data: [twse2330, twseRow('2317', '鴻海', -5_000_000)] }
+        if (date === '20261111') return { stat: 'OK', data: [twseRow('2330', '台積電', 1_000_000)] }
+        return NO_DATA
+      },
+      'www.tpex.org.tw': () => ({ stat: 'ok', tables: [{ data: [] }] }),
+    })
+
+  it('totals each stock over the trading days, skipping holidays, with a daily breakdown', async () => {
+    const { calls } = routes()
+    const result = await getInstitutionalTool.run({ symbols: ['2330', '2317'], days: 2 }, context)
+
+    expect(result).toMatchObject({ date: '2026-11-13', start_date: '2026-11-11', end_date: '2026-11-13', trading_days: 2 })
+    const t86Dates = calls.filter((url) => url.pathname.endsWith('T86')).map((url) => url.searchParams.get('date'))
+    expect(t86Dates).toEqual(['20261113', '20261112', '20261111'])
+
+    const [tsmc, hon] = result.stocks as { code: string; total_net: number; foreign_net: number; daily: { date: string; total_net: number }[] }[]
+    expect(tsmc).toMatchObject({ code: '2330', total_net: 743_613 + 1_000_000, foreign_net: -2_618_070 * 2 })
+    expect(tsmc.daily.map((day) => [day.date, day.total_net])).toEqual([
+      ['2026-11-11', 1_000_000],
+      ['2026-11-13', 743_613],
+    ])
+    expect(hon.daily.map((day) => [day.date, day.total_net])).toEqual([
+      ['2026-11-11', 0],
+      ['2026-11-13', -5_000_000],
+    ])
+    expect(result.notes).toContain('Figures are net totals over 2 trading days (2026-11-11 to 2026-11-13).')
+  })
+
+  it('ranks by totals over the period and sums the market summary', async () => {
+    routes()
+    const result = await getInstitutionalTool.run({ days: 2, limit: 1 }, context)
+    expect((result.top_buyers as { code: string; total_net: number }[])[0]).toMatchObject({ code: '2330', total_net: 1_743_613 })
+    expect((result.top_sellers as { code: string }[])[0]).toMatchObject({ code: '2317' })
+    expect(result.market_summary).toMatchObject({ total: { net: 45_268_332_497 * 2 } })
+  })
+
+  it('keeps the single-day shape without a daily breakdown', async () => {
+    routes()
+    const result = await getInstitutionalTool.run({ symbols: ['2330'] }, context)
+    expect(result).toMatchObject({ start_date: '2026-11-13', end_date: '2026-11-13', trading_days: 1 })
+    expect((result.stocks as object[])[0]).not.toHaveProperty('daily')
+  })
+})
