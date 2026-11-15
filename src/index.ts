@@ -31,7 +31,7 @@ Usage:
   tw-stock-mcp --help     Print this help
 
 Add it to Claude Code:
-  claude mcp add tw-stock -- npx -y tw-stock-mcp@${version}
+  claude mcp add tw-stock -- npx -y npm:tw-stock-mcp@${version}
 `
 
 const arg = process.argv[2]
