@@ -169,6 +169,28 @@ describe('market tools', () => {
     expect(result.notes).toContain('Institutional summary not published yet for this date (usually around 15:00-16:30 Taipei).')
   })
 
+  it('takes the institutional summary for the requested day, not the latest one', async () => {
+    const summary = (net: string) => [
+      ['自營商(自行買賣)', '1', '1', '0'], ['自營商(避險)', '1', '1', '0'], ['投信', '1', '1', '0'],
+      ['外資及陸資(不含外資自營商)', '1', '1', '0'], ['外資自營商', '0', '0', '0'], ['合計', '1', '1', net],
+    ]
+    stubFetch({
+      'www.twse.com.tw': (url) => {
+        if (url.pathname.endsWith('BFI82U')) {
+          // Like the real endpoint: without type=day and dayDate it answers with its latest day.
+          const day = url.searchParams.get('type') === 'day' ? url.searchParams.get('dayDate') : null
+          return day === '20261113'
+            ? { stat: 'OK', date: day, data: summary('-114,394,054,197') }
+            : { stat: 'OK', date: '20261120', data: summary('-50,940,775,695') }
+        }
+        return url.searchParams.get('date') === '20261113' ? twseResponse() : NO_DATA
+      },
+      'www.tpex.org.tw': tpexResponse,
+    })
+    const result = await getMarketOverviewTool.run({ date: '2026-11-13' }, context)
+    expect(result.institutional).toMatchObject({ total_net: -114_394_054_197 })
+  })
+
   it('reads index values and samples the intraday series', async () => {
     stubFetch({
       'mis.twse.com.tw': (url) =>

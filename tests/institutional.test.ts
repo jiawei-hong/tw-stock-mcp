@@ -3,6 +3,7 @@ import {
   parseInstitutional,
   parseSummary,
   resetInstitutionalCache,
+  summaryUrl,
 } from '../src/core/institutional.js'
 import { resetSecurityCache } from '../src/core/securities.js'
 import { getInstitutionalTool } from '../src/tools/get-institutional.js'
@@ -37,6 +38,14 @@ const summaryRows = [
   ['合計', '459,096,864,028', '413,828,531,531', '45,268,332,497'],
 ]
 const NO_DATA = { stat: '很抱歉，沒有符合條件的資料!' }
+const doubled = (rows: string[][]) =>
+  rows.map(([label, ...values]) => [label, ...values.map((value) => (Number(value.replaceAll(',', '')) * 2).toLocaleString('en-US'))])
+
+/** The day a TWSE request asks for. Like the real endpoint, BFI82U reads only type=day&dayDate and otherwise answers with its latest day. */
+const askedDate = (url: URL, latest: string) =>
+  url.pathname.endsWith('BFI82U')
+    ? (url.searchParams.get('type') === 'day' && url.searchParams.get('dayDate')) || latest
+    : url.searchParams.get('date')
 
 describe('parseInstitutional', () => {
   it('maps the TWSE layout so the groups add up to the total', () => {
@@ -78,6 +87,26 @@ describe('parseSummary', () => {
       total: { net: 45_268_332_497 },
     })
   })
+
+  it('refuses an answer for another day instead of mislabelling it', () => {
+    expect(() => parseSummary({ stat: 'OK', date: '20261120', data: summaryRows }, '2026-11-13')).toThrow(
+      'TWSE answered with the summary for 20261120 instead of 2026-11-13'
+    )
+    expect(parseSummary({ stat: 'OK', date: '20261113', data: summaryRows }, '2026-11-13')).toMatchObject({
+      total: { net: 45_268_332_497 },
+    })
+  })
+
+  it('treats a day past the latest published one as not published yet', () => {
+    expect(parseSummary({ stat: '查詢日期大於可查詢最大日期，請重新查詢!' })).toBeNull()
+  })
+
+  it('asks for one day with type=day and dayDate, which BFI82U needs', () => {
+    const url = new URL(summaryUrl('2026-11-13'))
+    expect(url.searchParams.get('type')).toBe('day')
+    expect(url.searchParams.get('dayDate')).toBe('20261113')
+    expect(url.searchParams.has('date')).toBe(false)
+  })
 })
 
 describe('get_institutional_trading', () => {
@@ -99,8 +128,8 @@ describe('get_institutional_trading', () => {
     stubFetch({
       'openapi.tdcc.com.tw': () => tdccRecords,
       'www.twse.com.tw': (url) => {
-        if (url.searchParams.get('date') !== '20261113') return NO_DATA
-        if (url.pathname.endsWith('BFI82U')) return { stat: 'OK', data: summaryRows }
+        if (askedDate(url, '20261113') !== '20261113') return NO_DATA
+        if (url.pathname.endsWith('BFI82U')) return { stat: 'OK', date: '20261113', data: summaryRows }
         return { stat: 'OK', data: [twse2330, twseRow('2317', '鴻海', -5_000_000), twseRow('00878', '國泰永續高股息', 9_000_000)] }
       },
       'www.tpex.org.tw': () => ({ stat: 'ok', tables: [{ data: [tpex6488] }] }),
@@ -176,8 +205,12 @@ describe('get_institutional_trading over several days', () => {
   const routes = () =>
     stubFetch({
       'www.twse.com.tw': (url) => {
-        const date = url.searchParams.get('date')
-        if (url.pathname.endsWith('BFI82U')) return date === '20261113' || date === '20261111' ? { stat: 'OK', data: summaryRows } : NO_DATA
+        const date = askedDate(url, '20261113')
+        if (url.pathname.endsWith('BFI82U')) {
+          if (date === '20261113') return { stat: 'OK', date, data: summaryRows }
+          if (date === '20261111') return { stat: 'OK', date, data: doubled(summaryRows) }
+          return NO_DATA
+        }
         if (date === '20261113') return { stat: 'OK', data: [twse2330, twseRow('2317', '鴻海', -5_000_000)] }
         if (date === '20261111') return { stat: 'OK', data: [twseRow('2330', '台積電', 1_000_000)] }
         return NO_DATA
@@ -211,7 +244,8 @@ describe('get_institutional_trading over several days', () => {
     const result = await getInstitutionalTool.run({ days: 2, limit: 1 }, context)
     expect((result.top_buyers as { code: string; total_net: number }[])[0]).toMatchObject({ code: '2330', total_net: 1_743_613 })
     expect((result.top_sellers as { code: string }[])[0]).toMatchObject({ code: '2317' })
-    expect(result.market_summary).toMatchObject({ total: { net: 45_268_332_497 * 2 } })
+    // 11-13 plus 11-11, which is twice 11-13: each day's own summary, not the latest day counted twice.
+    expect(result.market_summary).toMatchObject({ total: { net: 45_268_332_497 * 3 } })
   })
 
   it('keeps the single-day shape without a daily breakdown', async () => {

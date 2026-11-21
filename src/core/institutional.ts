@@ -63,18 +63,19 @@ export function institutionalUrl(date: string, market: Market): string {
 }
 
 export function summaryUrl(date: string): string {
-  const query = new URLSearchParams({ date: date.replaceAll('-', ''), response: 'json' })
+  // BFI82U ignores `date`: it needs type=day and dayDate, or it silently answers with the latest day.
+  const query = new URLSearchParams({ type: 'day', dayDate: date.replaceAll('-', ''), response: 'json' })
   return `https://www.twse.com.tw/rwd/zh/fund/BFI82U?${query}`
 }
 
-type Response = { stat?: unknown; data?: unknown; tables?: { data?: unknown }[] }
+type Response = { stat?: unknown; date?: unknown; data?: unknown; tables?: { data?: unknown }[] }
 
-/** Data rows, or null when the exchange has nothing for that date. */
+/** Data rows, or null when the exchange has nothing for that date (no trading, or not published yet). */
 function rowsOf(data: unknown): unknown[][] | null {
   if (!data || typeof data !== 'object') throw new Error('Invalid institutional response')
   const response = data as Response
   if (typeof response.stat === 'string' && response.stat.toLowerCase() !== 'ok') {
-    if (response.stat.includes('沒有符合條件')) return null
+    if (response.stat.includes('沒有符合條件') || response.stat.includes('大於可查詢最大日期')) return null
     throw new Error(`Institutional data unavailable: ${response.stat}`)
   }
   const rows = response.data ?? response.tables?.[0]?.data
@@ -117,9 +118,14 @@ const SUMMARY_LABELS: Record<string, keyof Omit<MarketSummary, 'market' | 'unit'
   合計: 'total',
 }
 
-export function parseSummary(data: unknown): MarketSummary | null {
+/** `date` (YYYY-MM-DD) is the day asked for: an answer for any other day is refused rather than mislabelled. */
+export function parseSummary(data: unknown, date?: string): MarketSummary | null {
   const rows = rowsOf(data)
   if (!rows) return null
+  const answered = (data as Response).date
+  if (date && typeof answered === 'string' && answered !== date.replaceAll('-', '')) {
+    throw new Error(`TWSE answered with the summary for ${answered} instead of ${date}`)
+  }
   const summary: Partial<MarketSummary> = { market: 'tse', unit: 'TWD' }
   for (const row of rows) {
     const key = SUMMARY_LABELS[String(row[0]).trim()]
@@ -145,5 +151,5 @@ export function loadInstitutional(date: string, market: Market, signal?: AbortSi
 
 export function loadSummary(date: string, signal?: AbortSignal) {
   const url = summaryUrl(date)
-  return cache.get(url, date, async () => parseSummary(await requestJson<unknown>(url, { signal })))
+  return cache.get(url, date, async () => parseSummary(await requestJson<unknown>(url, { signal }), date))
 }
