@@ -56,7 +56,7 @@ If the first start never finishes, npm probably cannot reach `registry.npmjs.org
 | `get_stock_overview` | Everything in one call: quote, 1-month price summary, fundamentals, latest institutional trading, upcoming events. |
 | `search_security` | Find securities by code or name fragment. Excludes warrants and convertible bonds unless asked. |
 | `get_quote` | Near-realtime quotes for up to 50 stocks/ETFs: price, change, OHLC, limits, volume, 5-level bid/ask, status. |
-| `get_history` | Daily/weekly/monthly OHLCV for up to a year, with a summary and moving averages. |
+| `get_history` | Daily/weekly/monthly OHLCV for up to a year, with a summary, moving averages and RSI, MACD, KD and Bollinger Bands. |
 | `get_fundamentals` | P/E, dividend yield, P/B; latest monthly revenue with MoM/YoY; latest income statement with EPS and margins. |
 | `get_institutional_trading` | 三大法人 net buy/sell per stock, or the market summary with top net buyers and sellers. |
 | `get_market_events` | Ex-dividend dates, disposition stocks (處置), attention notices (注意), trading halts, market holidays. |
