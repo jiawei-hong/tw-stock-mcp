@@ -1,12 +1,17 @@
+import { type Dividends, loadDividends } from '../core/dividends.js'
 import { type Fundamentals, loadFundamentals } from '../core/fundamentals.js'
 import type { Market } from '../core/market.js'
 import { resolveSecurity } from '../core/resolve.js'
 import { type Tool } from '../mcp/server.js'
 import { describeUnresolved } from './shared.js'
 
-type Input = { symbols: string[]; market?: Market }
+const SECTIONS = ['balance_sheet', 'dividends'] as const
+type Section = (typeof SECTIONS)[number]
+type Input = { symbols: string[]; market?: Market; include?: Section[] }
+type Company = Fundamentals & { dividends?: Dividends | null }
 
 const nullableNumber = { type: ['number', 'null'] } as const
+const nullableDate = { type: ['string', 'null'], description: 'YYYY-MM-DD' } as const
 
 export const getFundamentalsTool: Tool<Input> = {
   name: 'get_fundamentals',
@@ -15,8 +20,10 @@ export const getFundamentalsTool: Tool<Input> = {
     'Latest fundamentals for Taiwan-listed companies (TWSE and TPEx): valuation (P/E, dividend yield, P/B), the latest monthly revenue with MoM/YoY growth, and the latest quarterly income statement with EPS and margins.',
     'All amounts are TWD (converted from the exchanges\' thousands). The income statement is year-to-date (cumulative from January through the reported quarter), as filed in Taiwan.',
     'P/E uses the latest four quarters of EPS, which can lag the income statement (see earnings_period); dividend yield uses the latest annual dividend (see dividend_year and dividend_per_share). Yields above 20% are flagged in warnings because they usually reflect a one-off distribution.',
+    'Optional sections via `include`: "balance_sheet" (latest quarter\'s assets, liabilities, equity, debt ratio, current ratio, ROE and ROA, both year-to-date and annualised) and "dividends" (recent dividend resolutions with cash and stock per share, and ex-dividend days since January of last year). They are left out unless asked for.',
+    'Only the latest month of revenue is published; there is no revenue history.',
     'ETFs and some securities have no fundamentals; such inputs are listed in `unresolved`.',
-    'Sources: TWSE / TPEx OpenAPI, refreshed daily (valuation) to monthly/quarterly (revenue, financials).',
+    'Sources: TWSE / TPEx OpenAPI, refreshed daily (valuation) to monthly/quarterly (revenue, financials); ex-dividend days from the TWSE / TPEx websites.',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -29,6 +36,13 @@ export const getFundamentalsTool: Tool<Input> = {
         description: 'Codes or exact names, e.g. ["2330", "鴻海"]. Up to 20.',
       },
       market: { type: 'string', enum: ['tse', 'otc'], description: 'Omit to detect automatically.' },
+      include: {
+        type: 'array',
+        maxItems: SECTIONS.length,
+        items: { type: 'string', enum: SECTIONS },
+        description:
+          'Extra sections to add, e.g. ["balance_sheet", "dividends"]. Omit for the default response. Each one downloads more full-market data, so ask only for what you need.',
+      },
     },
     required: ['symbols'],
     additionalProperties: false,
@@ -87,6 +101,114 @@ export const getFundamentalsTool: Tool<Input> = {
                 net_margin_percent: nullableNumber,
               },
             },
+            balance_sheet: {
+              type: ['object', 'null'],
+              description:
+                'Only present when include has "balance_sheet". Latest quarter-end balances; null when the exchange publishes none for this company (see warnings).',
+              properties: {
+                period: { type: 'string', description: 'e.g. "2026 Q3": balances at the end of this quarter' },
+                total_assets: { ...nullableNumber, description: 'TWD' },
+                total_liabilities: { ...nullableNumber, description: 'TWD' },
+                equity: { ...nullableNumber, description: 'TWD, total equity including non-controlling interests' },
+                equity_attributable_to_parent: { ...nullableNumber, description: 'TWD, the ROE denominator' },
+                current_assets: {
+                  ...nullableNumber,
+                  description: 'TWD; null for banks, financial holdings and insurers, which do not split current and non-current items',
+                },
+                current_liabilities: { ...nullableNumber, description: 'TWD; null for banks, financial holdings and insurers' },
+                book_value_per_share: { ...nullableNumber, description: 'TWD, as published by the exchange' },
+                debt_ratio_percent: {
+                  ...nullableNumber,
+                  description: 'total_liabilities / total_assets. Banks and insurers normally run around 90%, so compare within an industry.',
+                },
+                current_ratio: { ...nullableNumber, description: 'current_assets / current_liabilities, in times (not percent)' },
+                roe_ytd_percent: {
+                  ...nullableNumber,
+                  description:
+                    'Year-to-date, NOT annualised: income_statement.net_income / period-end equity_attributable_to_parent. Null when the income statement is for another quarter or equity is not positive.',
+                },
+                roe_annualised_percent: {
+                  ...nullableNumber,
+                  description: 'roe_ytd_percent x 4 / quarters elapsed (x 4/3 for Q3); use this to compare with annual ROE',
+                },
+                roa_ytd_percent: {
+                  ...nullableNumber,
+                  description: 'Year-to-date, NOT annualised: income_statement.net_income / period-end total_assets',
+                },
+                roa_annualised_percent: { ...nullableNumber, description: 'roa_ytd_percent x 4 / quarters elapsed' },
+              },
+            },
+            dividends: {
+              type: ['object', 'null'],
+              description: 'Only present when include has "dividends".',
+              properties: {
+                distributions: {
+                  type: ['array', 'null'],
+                  description:
+                    'Dividends resolved by the board or shareholders in roughly the last year, newest earnings period first. TWSE only: null for TPEx companies (TPEx publishes no current dataset; use ex_dividends) and when the dataset failed (see warnings). Empty when nothing was resolved.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      fiscal_year: { type: 'integer', description: 'Year of the earnings being distributed' },
+                      period: {
+                        type: 'string',
+                        description: '"2025" (full year), "2026 H1" / "2026 H2" (half-year) or "2026 Q3" (quarter)',
+                      },
+                      cash_dividend: {
+                        ...nullableNumber,
+                        description: 'TWD per share, from earnings plus legal reserve and capital surplus',
+                      },
+                      stock_dividend: {
+                        ...nullableNumber,
+                        description: 'TWD of par value per share; at the usual 10 TWD par, 1.0 = 100 new shares per 1,000 held',
+                      },
+                      status: {
+                        type: ['string', 'null'],
+                        description:
+                          'As published: 董事會擬議 (board proposal, may change), 董事會決議 (board resolution), 股東會確認 (approved by shareholders), or a combination',
+                      },
+                      board_date: nullableDate,
+                      shareholders_meeting_date: nullableDate,
+                    },
+                  },
+                },
+                ex_dividends: {
+                  type: ['array', 'null'],
+                  description:
+                    'Ex-dividend / ex-rights days within ex_dividends_window, newest first, for both exchanges. The amount can differ slightly from the resolved one because it is adjusted for the final share count. For upcoming ex-dates use get_market_events. Null when the exchange\'s table failed (see warnings).',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      date: { type: 'string', description: 'Ex-date, YYYY-MM-DD' },
+                      type: {
+                        type: 'string',
+                        enum: ['ex_dividend', 'ex_rights', 'ex_rights_and_dividend'],
+                        description: 'ex_dividend = cash only; ex_rights = stock dividend or rights issue; ex_rights_and_dividend = both',
+                      },
+                      cash_dividend: {
+                        ...nullableNumber,
+                        description: 'TWD per share. TWSE does not split ex_rights_and_dividend days, so it is null there.',
+                      },
+                      stock_dividend_per_thousand_shares: {
+                        ...nullableNumber,
+                        description: 'Free shares per 1,000 held. Null on TWSE ex_rights days, which do not say whether the rights are a stock dividend or a rights issue.',
+                      },
+                      price_adjustment: {
+                        ...nullableNumber,
+                        description: 'TWD per share, close_before - reference_price: the cash dividend plus the value of any rights',
+                      },
+                      close_before: nullableNumber,
+                      reference_price: nullableNumber,
+                    },
+                  },
+                },
+                ex_dividends_window: {
+                  type: 'object',
+                  description: 'January 1 of last year to today',
+                  properties: { start: { type: 'string' }, end: { type: 'string' } },
+                },
+              },
+            },
           },
           required: ['code', 'market', 'valuation', 'monthly_revenue', 'income_statement'],
         },
@@ -101,7 +223,8 @@ export const getFundamentalsTool: Tool<Input> = {
   },
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
-  async run({ symbols, market }, { signal }) {
+  async run({ symbols, market, include = [] }, { signal }) {
+    const sections = new Set(include)
     const unresolved: { input: string; reason: string }[] = []
     const wanted: { input: string; code: string; markets: Market[] }[] = []
 
@@ -119,16 +242,22 @@ export const getFundamentalsTool: Tool<Input> = {
     }
 
     const warnings: string[] = []
-    const found = new Map<string, Fundamentals>()
+    const found = new Map<string, Company>()
     for (const target of ['tse', 'otc'] as const) {
       const codes = wanted.filter((entry) => entry.markets.includes(target) && !found.has(entry.code)).map((entry) => entry.code)
       if (!codes.length) continue
-      const result = await loadFundamentals(codes, target, signal)
+      const [result, dividends] = await Promise.all([
+        loadFundamentals(codes, target, signal, { balanceSheet: sections.has('balance_sheet') }),
+        sections.has('dividends') ? loadDividends(codes, target, signal) : null,
+      ])
       warnings.push(...result.warnings)
-      for (const [code, value] of result.results) found.set(code, value)
+      if (dividends && result.results.size) warnings.push(...dividends.warnings)
+      for (const [code, value] of result.results) {
+        found.set(code, dividends ? { ...value, dividends: dividends.results.get(code) ?? null } : value)
+      }
     }
 
-    const companies: Fundamentals[] = []
+    const companies: Company[] = []
     for (const entry of wanted) {
       const value = found.get(entry.code)
       if (value) companies.push(value)
