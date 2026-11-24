@@ -53,6 +53,6 @@ jobs:
             const list = lines.find((m) => m.id === 2)
             if (init?.result?.protocolVersion !== "2025-11-25") throw new Error("initialize failed: " + JSON.stringify(init))
             const tools = list?.result?.tools ?? []
-            if (tools.length !== 11) throw new Error("expected 11 tools, got " + tools.length)
+            if (tools.length !== 13) throw new Error("expected 13 tools, got " + tools.length)
             console.log("OK:", tools.map((tool) => tool.name).join(", "))
           '
