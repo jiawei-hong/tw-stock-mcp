@@ -82,8 +82,8 @@ Conventions:
 ## Data sources
 
 - Realtime quotes and indices: TWSE MIS (`mis.twse.com.tw`)
-- End-of-day prices, history, institutional trading, foreign ownership: `www.twse.com.tw`, `www.tpex.org.tw`
-- Fundamentals and events: TWSE / TPEx OpenAPI (`openapi.twse.com.tw`, `www.tpex.org.tw/openapi`)
+- End-of-day prices, history, institutional and margin trading, foreign ownership, ex-dividend history: `www.twse.com.tw`, `www.tpex.org.tw`
+- Fundamentals (including balance sheets and dividend resolutions) and events: TWSE / TPEx OpenAPI (`openapi.twse.com.tw`, `www.tpex.org.tw/openapi`)
 - Security directory and shareholder distribution: TDCC open data (`openapi.tdcc.com.tw`)
 
 Responses are cached in memory (5 minutes to 6 hours depending on how often the source changes), and multi-month history is fetched one month at a time to avoid bursts against the exchanges.
