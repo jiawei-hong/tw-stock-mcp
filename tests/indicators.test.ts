@@ -189,6 +189,18 @@ describe('get_history indicators', () => {
     expect(validate(getHistoryTool.outputSchema as JsonSchema, result, 'result')).toEqual([])
   })
 
+  it('returns output that matches the schema with both moving averages and indicators', async () => {
+    stubFetch({ 'openapi.tdcc.com.tw': () => tdccRecords, 'www.twse.com.tw': twseRoute })
+    const result = await getHistoryTool.run(
+      { symbol: '2330', start: '2026-11-02', moving_averages: [5, 20], indicators: ['rsi', 'macd'] },
+      context
+    )
+
+    const bars = result.bars as { moving_averages: Record<string, number | null> }[]
+    expect(Object.keys(bars[0].moving_averages)).toEqual(['ma5', 'ma20'])
+    expect(validate(getHistoryTool.outputSchema as JsonSchema, result, 'result')).toEqual([])
+  })
+
   it('accepts only known indicator names', () => {
     expect(validate(getHistoryTool.inputSchema, { symbol: '2330', indicators: ['rsi', 'atr'] })).toEqual([
       'arguments.indicators[1] must be one of: rsi, macd, kd, bollinger',
