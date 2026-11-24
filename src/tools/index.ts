@@ -6,6 +6,7 @@ import { getMarketEventsTool } from './get-market-events.js'
 import { getMarketIndexTool } from './get-market-index.js'
 import { getMarketMoversTool } from './get-market-movers.js'
 import { getMarketOverviewTool } from './get-market-overview.js'
+import { getOwnershipTool } from './get-ownership.js'
 import { getQuoteTool } from './get-quote.js'
 import { getStockOverviewTool } from './get-stock-overview.js'
 import { screenStocksTool } from './screen-stocks.js'
@@ -18,6 +19,7 @@ export const tools = [
   getQuoteTool,
   getHistoryTool,
   getFundamentalsTool,
+  getOwnershipTool,
   getInstitutionalTool,
   getMarginTradingTool,
   getMarketEventsTool,
