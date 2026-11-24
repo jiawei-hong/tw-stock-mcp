@@ -7,7 +7,8 @@ export type JsonSchema =
   | {
       type: 'object'
       description?: string
-      properties: Record<string, JsonSchema>
+      /** Omit for a free-form map (e.g. `{"ma5": …, "ma20": …}`): any key is allowed unless additionalProperties is false. */
+      properties?: Record<string, JsonSchema>
       required?: readonly string[]
       additionalProperties?: boolean
     }
@@ -74,10 +75,10 @@ export function validate(
         if (record[key] === undefined) problems.push(`${path}.${key} is required`)
       }
       for (const [key, entry] of Object.entries(record)) {
-        const property = schema.properties[key]
+        const property = schema.properties?.[key]
         if (!property) {
           if (schema.additionalProperties === false) {
-            const known = Object.keys(schema.properties).join(', ')
+            const known = Object.keys(schema.properties ?? {}).join(', ')
             problems.push(`${path}.${key} is not allowed (known: ${known})`)
           }
           continue

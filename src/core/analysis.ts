@@ -1,4 +1,5 @@
 import type { DailyBar } from './history.js'
+import { type Indicator, indicatorSeries, type IndicatorValues } from './indicators.js'
 
 export type Interval = 'day' | 'week' | 'month'
 
@@ -7,6 +8,7 @@ export type Bar = Omit<DailyBar, 'change'> & {
   end_date: string
   change: number | null
   moving_averages?: Record<string, number | null>
+  indicators?: IndicatorValues
 }
 
 export type Summary = {
@@ -58,16 +60,18 @@ function sum(values: (number | null)[]): number | null {
 }
 
 /**
- * Builds output bars. Moving averages are computed on all daily `bars`
- * (including warm-up days before `start`) and reported at each bar's last day.
+ * Builds output bars. Moving averages and indicators are computed on all daily
+ * `bars` (including warm-up days before `start`) and reported at each bar's last day.
  */
 export function buildBars(
   bars: readonly DailyBar[],
   start: string,
   interval: Interval,
-  periods: readonly number[]
+  periods: readonly number[],
+  indicators: readonly Indicator[] = []
 ): Bar[] {
   const averages = periods.map((period) => movingAverage(bars, period))
+  const indicatorValues = indicators.length ? indicatorSeries(bars, indicators) : []
   const daily = bars
     .map((bar, index) => ({ bar, index }))
     .filter(({ bar }) => bar.date >= start)
@@ -112,6 +116,7 @@ export function buildBars(
         periods.map((period, position) => [`ma${period}`, averages[position][last.index]])
       )
     }
+    if (indicators.length) result.indicators = indicatorValues[last.index]
     previousClose = last.bar.close
     return result
   })

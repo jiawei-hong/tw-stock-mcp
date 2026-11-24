@@ -45,4 +45,13 @@ describe('validate', () => {
   it('rejects non-object arguments', () => {
     expect(validate(schema, ['2330'])).toEqual(['arguments must be object, got array'])
   })
+
+  it('treats an object schema without properties as a free-form map', () => {
+    const map: JsonSchema = { type: 'object' }
+    expect(validate(map, { ma5: 1020.5, ma20: null })).toEqual([])
+    expect(validate(map, 'ma5')).toEqual(['arguments must be object, got string'])
+    expect(validate({ type: 'object', additionalProperties: false }, { ma5: 1 })).toEqual([
+      'arguments.ma5 is not allowed (known: )',
+    ])
+  })
 })

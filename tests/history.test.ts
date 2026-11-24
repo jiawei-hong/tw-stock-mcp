@@ -172,6 +172,17 @@ describe('get_history', () => {
     expect(bars[0].moving_averages.ma20).not.toBeNull()
   })
 
+  it('does not count the reference month twice when warming up', async () => {
+    const { calls } = stubFetch({ 'openapi.tdcc.com.tw': () => tdccRecords, 'www.twse.com.tw': twseRoute })
+    const result = await getHistoryTool.run({ symbol: '2330', start: '2026-11-02', moving_averages: [60] }, context)
+
+    const months = calls.filter((url) => url.hostname === 'www.twse.com.tw').map((url) => url.searchParams.get('date'))
+    expect(months).toEqual(['20261101', '20261001', '20260901', '20260801'])
+    // Nov 2 (1000) + Oct (22 days, 1000-1021) + Sep (22 days) + the last 15 days of Aug (1006-1020).
+    const bars = result.bars as { moving_averages: { ma60: number } }[]
+    expect(bars[0].moving_averages.ma60).toBe((1000 + 22_231 + 22_231 + 15_195) / 60)
+  })
+
   it('uses TPEx for OTC listings', async () => {
     const { calls } = stubFetch({
       'openapi.tdcc.com.tw': () => tdccRecords,
