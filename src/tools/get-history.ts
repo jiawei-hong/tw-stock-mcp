@@ -174,7 +174,8 @@ export const getHistoryTool: Tool<Input> = {
     const notes: string[] = []
     const longest = periods[periods.length - 1]
     if (longest && bars.length) {
-      let month = span.months[0]
+      // Continue before the earliest month loaded, which may already be the reference month.
+      let month = bars[0].date.slice(0, 7)
       for (
         let attempt = 0;
         attempt < MAX_WARMUP_MONTHS && bars.filter((bar) => bar.date < span.start).length < longest - 1;
