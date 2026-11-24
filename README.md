@@ -15,19 +15,19 @@ Requires Node.js 22 or later. Pin a version so an upstream change can never reac
 **Claude Code**
 
 ```bash
-claude mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.1.3
+claude mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.2.0
 ```
 
 **Codex CLI**
 
 ```bash
-codex mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.1.3
+codex mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.2.0
 ```
 
 **VS Code**
 
 ```bash
-code --add-mcp '{"name":"tw-stock","command":"npx","args":["-y","npm:tw-stock-mcp@0.1.3"]}'
+code --add-mcp '{"name":"tw-stock","command":"npx","args":["-y","npm:tw-stock-mcp@0.2.0"]}'
 ```
 
 **Claude Desktop, Cursor and other clients** — add to the client's MCP config (`claude_desktop_config.json`, `~/.cursor/mcp.json`, …):
@@ -37,7 +37,7 @@ code --add-mcp '{"name":"tw-stock","command":"npx","args":["-y","npm:tw-stock-mc
   "mcpServers": {
     "tw-stock": {
       "command": "npx",
-      "args": ["-y", "npm:tw-stock-mcp@0.1.3"]
+      "args": ["-y", "npm:tw-stock-mcp@0.2.0"]
     }
   }
 }
