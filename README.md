@@ -59,6 +59,7 @@ If the first start never finishes, npm probably cannot reach `registry.npmjs.org
 | `get_history` | Daily/weekly/monthly OHLCV for up to a year, with a summary, moving averages and RSI, MACD, KD and Bollinger Bands. |
 | `get_fundamentals` | P/E, dividend yield, P/B; latest monthly revenue with MoM/YoY; latest income statement with EPS and margins. |
 | `get_institutional_trading` | 三大法人 net buy/sell per stock, or the market summary with top net buyers and sellers. |
+| `get_margin_trading` | 融資融券 per stock: margin and short buys, sells, balances, limits, 券資比 and 融資使用率; or the market totals (融資金額) with the largest balance changes. |
 | `get_market_events` | Ex-dividend dates, disposition stocks (處置), attention notices (注意), trading halts, market holidays. |
 
 **Whole market**

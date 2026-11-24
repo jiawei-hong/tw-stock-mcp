@@ -1,6 +1,7 @@
 import { getFundamentalsTool } from './get-fundamentals.js'
 import { getHistoryTool } from './get-history.js'
 import { getInstitutionalTool } from './get-institutional.js'
+import { getMarginTradingTool } from './get-margin-trading.js'
 import { getMarketEventsTool } from './get-market-events.js'
 import { getMarketIndexTool } from './get-market-index.js'
 import { getMarketMoversTool } from './get-market-movers.js'
@@ -18,6 +19,7 @@ export const tools = [
   getHistoryTool,
   getFundamentalsTool,
   getInstitutionalTool,
+  getMarginTradingTool,
   getMarketEventsTool,
   getMarketIndexTool,
   getMarketOverviewTool,
