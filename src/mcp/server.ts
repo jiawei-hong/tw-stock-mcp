@@ -7,7 +7,7 @@ export type { JsonRpcNotification, Notify } from './progress.js'
  * Hand-rolled MCP server core (JSON-RPC 2.0), independent of the transport.
  * Implements the subset a read-only tools server needs: initialize, ping,
  * tools/list, tools/call, request cancellation, progress notifications and,
- * when configured, prompts/list and prompts/get.
+ * when configured, prompts (list, get) and read-only resources (list, read).
  */
 
 /** Newest first. The first entry is offered when the client asks for an unknown version. */
@@ -27,6 +27,8 @@ export const JSON_RPC_ERRORS = {
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
   INTERNAL_ERROR: -32603,
+  /** MCP: resources/read for a URI the server does not have. */
+  RESOURCE_NOT_FOUND: -32002,
 } as const
 
 type Id = string | number
@@ -101,6 +103,16 @@ export type Prompt = {
   render(args: Record<string, string>): string
 }
 
+export type Resource = {
+  uri: string
+  name: string
+  title: string
+  description: string
+  mimeType: string
+  /** Returns the current contents as text. */
+  read(signal: AbortSignal): Promise<string>
+}
+
 /** A prompt argument the client has to fix; reported as invalid params. */
 export class PromptError extends Error {
   constructor(message: string) {
@@ -119,6 +131,8 @@ export type ServerOptions = {
   tools: readonly Tool<any>[]
   /** The prompts capability is advertised only when this is non-empty. */
   prompts?: readonly Prompt[]
+  /** The resources capability (without subscribe or listChanged) is advertised only when this is non-empty. */
+  resources?: readonly Resource[]
   log?: (message: string) => void
 }
 
@@ -150,12 +164,14 @@ function errorMessage(error: unknown): string {
 export class McpServer {
   private readonly tools: Map<string, Tool<Record<string, unknown>>>
   private readonly prompts: Map<string, Prompt>
+  private readonly resources: Map<string, Resource>
   private readonly inFlight = new Map<Id, AbortController>()
   private protocolVersion: string = SUPPORTED_PROTOCOL_VERSIONS[0]
 
   constructor(private readonly options: ServerOptions) {
     this.tools = new Map(options.tools.map((tool) => [tool.name, tool]))
     this.prompts = new Map((options.prompts ?? []).map((prompt) => [prompt.name, prompt]))
+    this.resources = new Map((options.resources ?? []).map((resource) => [resource.uri, resource]))
   }
 
   /**
@@ -256,6 +272,15 @@ export class McpServer {
       case 'prompts/get':
         if (!this.prompts.size) break
         return this.getPrompt(params)
+      case 'resources/list':
+        if (!this.resources.size) break
+        return { resources: [...this.resources.values()].map(describeResource) }
+      case 'resources/templates/list':
+        if (!this.resources.size) break
+        return { resourceTemplates: [] }
+      case 'resources/read':
+        if (!this.resources.size) break
+        return this.readResource(id, params)
     }
     throw new RpcError(JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${method}`)
   }
@@ -273,6 +298,7 @@ export class McpServer {
       capabilities: {
         tools: { listChanged: false },
         ...(this.prompts.size ? { prompts: { listChanged: false } } : {}),
+        ...(this.resources.size ? { resources: {} } : {}),
       },
       serverInfo: {
         name: this.options.name,
@@ -353,6 +379,25 @@ export class McpServer {
     return { content: [{ type: 'text', text: message }], isError: true }
   }
 
+  private async readResource(id: Id, params: Record<string, unknown>) {
+    const uri = params.uri
+    if (typeof uri !== 'string') {
+      throw new RpcError(JSON_RPC_ERRORS.INVALID_PARAMS, 'resources/read needs a uri')
+    }
+    const resource = this.resources.get(uri)
+    if (!resource) {
+      throw new RpcError(JSON_RPC_ERRORS.RESOURCE_NOT_FOUND, 'Resource not found', { uri })
+    }
+    const controller = new AbortController()
+    this.inFlight.set(id, controller)
+    try {
+      const text = await resource.read(controller.signal)
+      return { contents: [{ uri, mimeType: resource.mimeType, text }] }
+    } finally {
+      this.inFlight.delete(id)
+    }
+  }
+
   private getPrompt(params: Record<string, unknown>) {
     const name = params.name
     const prompt = typeof name === 'string' ? this.prompts.get(name) : undefined
@@ -405,6 +450,10 @@ export class McpServer {
       messages: [{ role: 'user', content: { type: 'text', text } }],
     }
   }
+}
+
+function describeResource({ uri, name, title, description, mimeType }: Resource) {
+  return { uri, name, title, description, mimeType }
 }
 
 function describePrompt(prompt: Prompt) {

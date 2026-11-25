@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { McpServer } from './mcp/server.js'
 import { serveStdio } from './mcp/stdio.js'
 import { promptsFor } from './prompts/index.js'
+import { resources } from './resources/index.js'
 import { tools } from './tools/index.js'
 
 // stdout carries the protocol; route any stray console output to stderr.
@@ -48,6 +49,7 @@ if (arg === '--version' || arg === '-v') {
     instructions: INSTRUCTIONS,
     tools,
     prompts: promptsFor(tools),
+    resources,
     log: (message) => process.stderr.write(`[tw-stock-mcp] ${message}\n`),
   })
   // Do not call process.exit() on success: stdout writes to a pipe are
