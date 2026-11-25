@@ -1,12 +1,23 @@
 import { PassThrough } from 'node:stream'
 
-import { McpServer } from '../src/mcp/server.js'
+import { McpServer, type Tool } from '../src/mcp/server.js'
 import { serveStdio } from '../src/mcp/stdio.js'
+
+const counting: Tool<Record<string, never>> = {
+  name: 'counting',
+  title: 'Counting',
+  description: 'Reports one progress update',
+  inputSchema: { type: 'object', properties: {} },
+  async run(_input, { progress }) {
+    progress?.(1, 1, 'done')
+    return { counted: 1 }
+  },
+}
 
 async function exchange(lines: string[]): Promise<unknown[]> {
   const input = new PassThrough()
   let written = ''
-  const done = serveStdio(new McpServer({ name: 't', version: '0', tools: [] }), input, {
+  const done = serveStdio(new McpServer({ name: 't', version: '0', tools: [counting] }), input, {
     write: (chunk: string) => (written += chunk),
   })
   // Split one message across chunks to check buffering.
@@ -37,5 +48,24 @@ describe('serveStdio', () => {
         { jsonrpc: '2.0', id: 2, result: {} },
       ])
     )
+  })
+
+  it('writes progress notifications before the response they belong to', async () => {
+    const responses = await exchange([
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'counting', arguments: {}, _meta: { progressToken: 'c' } },
+      }),
+    ])
+    expect(responses).toEqual([
+      {
+        jsonrpc: '2.0',
+        method: 'notifications/progress',
+        params: { progressToken: 'c', progress: 1, total: 1, message: 'done' },
+      },
+      expect.objectContaining({ id: 1, result: expect.objectContaining({ content: expect.any(Array) }) }),
+    ])
   })
 })

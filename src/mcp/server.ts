@@ -1,9 +1,12 @@
+import { createProgressReporter, type Notify, progressToken } from './progress.js'
 import { type JsonSchema, validate } from './schema.js'
+
+export type { JsonRpcNotification, Notify } from './progress.js'
 
 /**
  * Hand-rolled MCP server core (JSON-RPC 2.0), independent of the transport.
  * Implements the subset a read-only tools server needs: initialize, ping,
- * tools/list, tools/call and request cancellation.
+ * tools/list, tools/call, request cancellation and progress notifications.
  */
 
 /** Newest first. The first entry is offered when the client asks for an unknown version. */
@@ -43,7 +46,21 @@ export type ToolAnnotations = {
   openWorldHint?: boolean
 }
 
-export type ToolContext = { signal: AbortSignal }
+export type ToolContext = {
+  signal: AbortSignal
+  /**
+   * Reports progress on a slow call. Sends notifications/progress only when the
+   * request carried `_meta.progressToken`, and does nothing otherwise. Values
+   * must increase; updates are throttled to one per ~100 ms per request and
+   * none are sent after the response.
+   */
+  progress?: (progress: number, total?: number, message?: string) => void
+}
+
+export type HandleOptions = {
+  /** Sends a server-to-client notification on the transport that carried the message. */
+  notify?: Notify
+}
 
 export type Tool<Input = Record<string, unknown>> = {
   name: string
@@ -111,28 +128,31 @@ export class McpServer {
 
   /**
    * Handles one parsed JSON-RPC message (or batch). Resolves to the response to
-   * send, or `undefined` for notifications.
+   * send, or `undefined` for notifications. Notifications about a request (such
+   * as progress) go through `options.notify` before the response resolves.
    */
   async handle(
-    message: unknown
+    message: unknown,
+    options: HandleOptions = {}
   ): Promise<JsonRpcResponse | JsonRpcResponse[] | undefined> {
     if (Array.isArray(message)) {
       if (message.length === 0) {
         return failure(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Empty batch')
       }
       const responses = await Promise.all(
-        message.map((entry) => this.handleOne(entry))
+        message.map((entry) => this.handleOne(entry, options))
       )
       const sent = responses.filter(
         (response): response is JsonRpcResponse => response !== undefined
       )
       return sent.length ? sent : undefined
     }
-    return this.handleOne(message)
+    return this.handleOne(message, options)
   }
 
   private async handleOne(
-    message: unknown
+    message: unknown,
+    options: HandleOptions
   ): Promise<JsonRpcResponse | undefined> {
     if (
       !isRecord(message) ||
@@ -158,7 +178,7 @@ export class McpServer {
 
     const id = message.id
     try {
-      const result = await this.dispatch(id, message.method, params)
+      const result = await this.dispatch(id, message.method, params, options)
       return { jsonrpc: '2.0', id, result }
     } catch (error) {
       if (error instanceof RpcError) {
@@ -186,7 +206,8 @@ export class McpServer {
   private async dispatch(
     id: Id,
     method: string,
-    params: Record<string, unknown>
+    params: Record<string, unknown>,
+    options: HandleOptions
   ): Promise<unknown> {
     switch (method) {
       case 'initialize':
@@ -196,7 +217,7 @@ export class McpServer {
       case 'tools/list':
         return { tools: [...this.tools.values()].map((tool) => this.describe(tool)) }
       case 'tools/call':
-        return this.callTool(id, params)
+        return this.callTool(id, params, options)
       default:
         throw new RpcError(
           JSON_RPC_ERRORS.METHOD_NOT_FOUND,
@@ -246,7 +267,11 @@ export class McpServer {
     }
   }
 
-  private async callTool(id: Id, params: Record<string, unknown>) {
+  private async callTool(
+    id: Id,
+    params: Record<string, unknown>,
+    options: HandleOptions
+  ) {
     const name = params.name
     const tool = typeof name === 'string' ? this.tools.get(name) : undefined
     if (!tool) {
@@ -264,10 +289,12 @@ export class McpServer {
     }
 
     const controller = new AbortController()
+    const progress = createProgressReporter(progressToken(params), options.notify)
     this.inFlight.set(id, controller)
     try {
       const data = await tool.run(input as Record<string, unknown>, {
         signal: controller.signal,
+        progress: progress.report,
       })
       return {
         content: [{ type: 'text', text: JSON.stringify(data) }],
@@ -279,6 +306,8 @@ export class McpServer {
       }
       return this.errorResult(errorMessage(error))
     } finally {
+      // Before the response is returned, so no progress can follow it.
+      progress.close()
       this.inFlight.delete(id)
     }
   }
