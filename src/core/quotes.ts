@@ -161,7 +161,8 @@ export async function fetchQuotes(
     options.signal?.throwIfAborted()
     const batch = tickers.slice(offset, offset + MIS_BATCH_SIZE)
     const url = new URL(endpoint)
-    url.searchParams.set('ex_ch', batch.map((ticker) => `${ticker.toLowerCase()}.tw`).join('|'))
+    // Tickers are already "tse_00679B": MIS answers nothing for a lowercased letter suffix ("00679b").
+    url.searchParams.set('ex_ch', batch.map((ticker) => `${ticker}.tw`).join('|'))
     try {
       const data = await requestJson<MisResponse>(url.toString(), { signal: options.signal })
       if (!Array.isArray(data.msgArray)) throw new Error('Invalid MIS quote response')
