@@ -6,7 +6,8 @@ export type { JsonRpcNotification, Notify } from './progress.js'
 /**
  * Hand-rolled MCP server core (JSON-RPC 2.0), independent of the transport.
  * Implements the subset a read-only tools server needs: initialize, ping,
- * tools/list, tools/call, request cancellation and progress notifications.
+ * tools/list, tools/call, request cancellation, progress notifications and,
+ * when configured, prompts/list and prompts/get.
  */
 
 /** Newest first. The first entry is offered when the client asks for an unknown version. */
@@ -81,6 +82,33 @@ export class ToolError extends Error {
   }
 }
 
+export type PromptArgument = {
+  name: string
+  description: string
+  required?: boolean
+}
+
+export type Prompt = {
+  name: string
+  title: string
+  description: string
+  arguments: readonly PromptArgument[]
+  /**
+   * Returns the text of the user message. Receives only the declared arguments,
+   * trimmed, with blank optional ones left out. Throw PromptError for a value
+   * the client should correct.
+   */
+  render(args: Record<string, string>): string
+}
+
+/** A prompt argument the client has to fix; reported as invalid params. */
+export class PromptError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PromptError'
+  }
+}
+
 export type ServerOptions = {
   name: string
   title?: string
@@ -89,6 +117,8 @@ export type ServerOptions = {
   // Each tool's run() is typed by its own input; the server validates before calling.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tools: readonly Tool<any>[]
+  /** The prompts capability is advertised only when this is non-empty. */
+  prompts?: readonly Prompt[]
   log?: (message: string) => void
 }
 
@@ -119,11 +149,13 @@ function errorMessage(error: unknown): string {
 
 export class McpServer {
   private readonly tools: Map<string, Tool<Record<string, unknown>>>
+  private readonly prompts: Map<string, Prompt>
   private readonly inFlight = new Map<Id, AbortController>()
   private protocolVersion: string = SUPPORTED_PROTOCOL_VERSIONS[0]
 
   constructor(private readonly options: ServerOptions) {
     this.tools = new Map(options.tools.map((tool) => [tool.name, tool]))
+    this.prompts = new Map((options.prompts ?? []).map((prompt) => [prompt.name, prompt]))
   }
 
   /**
@@ -218,12 +250,14 @@ export class McpServer {
         return { tools: [...this.tools.values()].map((tool) => this.describe(tool)) }
       case 'tools/call':
         return this.callTool(id, params, options)
-      default:
-        throw new RpcError(
-          JSON_RPC_ERRORS.METHOD_NOT_FOUND,
-          `Method not found: ${method}`
-        )
+      case 'prompts/list':
+        if (!this.prompts.size) break
+        return { prompts: [...this.prompts.values()].map(describePrompt) }
+      case 'prompts/get':
+        if (!this.prompts.size) break
+        return this.getPrompt(params)
     }
+    throw new RpcError(JSON_RPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${method}`)
   }
 
   private initialize(params: Record<string, unknown>) {
@@ -236,7 +270,10 @@ export class McpServer {
 
     return {
       protocolVersion: this.protocolVersion,
-      capabilities: { tools: { listChanged: false } },
+      capabilities: {
+        tools: { listChanged: false },
+        ...(this.prompts.size ? { prompts: { listChanged: false } } : {}),
+      },
       serverInfo: {
         name: this.options.name,
         ...(this.options.title ? { title: this.options.title } : {}),
@@ -314,6 +351,72 @@ export class McpServer {
 
   private errorResult(message: string) {
     return { content: [{ type: 'text', text: message }], isError: true }
+  }
+
+  private getPrompt(params: Record<string, unknown>) {
+    const name = params.name
+    const prompt = typeof name === 'string' ? this.prompts.get(name) : undefined
+    if (!prompt) {
+      throw new RpcError(
+        JSON_RPC_ERRORS.INVALID_PARAMS,
+        `Unknown prompt: ${String(name)}. Available: ${[...this.prompts.keys()].join(', ')}`
+      )
+    }
+
+    const given = params.arguments ?? {}
+    if (!isRecord(given)) {
+      throw new RpcError(JSON_RPC_ERRORS.INVALID_PARAMS, 'Prompt arguments must be an object of strings')
+    }
+    const known = prompt.arguments.map((argument) => argument.name)
+    const args: Record<string, string> = {}
+    const problems: string[] = []
+    for (const [key, value] of Object.entries(given)) {
+      if (!known.includes(key)) {
+        problems.push(`${key} is not an argument of ${prompt.name} (known: ${known.join(', ') || 'none'})`)
+      } else if (typeof value === 'string') {
+        // Clients often send optional arguments the user left empty as "".
+        if (value.trim()) args[key] = value.trim()
+      } else if (value !== null && value !== undefined) {
+        problems.push(`${key} must be a string`)
+      }
+    }
+    for (const argument of prompt.arguments) {
+      const value = given[argument.name]
+      const blank = value === undefined || value === null || typeof value === 'string'
+      if (argument.required && args[argument.name] === undefined && blank) {
+        problems.push(`${argument.name} is required`)
+      }
+    }
+    const invalid = (reasons: string[]) =>
+      new RpcError(
+        JSON_RPC_ERRORS.INVALID_PARAMS,
+        `Invalid arguments for prompt ${prompt.name}: ${reasons.join('; ')}`
+      )
+    if (problems.length) throw invalid(problems)
+
+    let text: string
+    try {
+      text = prompt.render(args)
+    } catch (error) {
+      throw error instanceof PromptError ? invalid([error.message]) : error
+    }
+    return {
+      description: prompt.description,
+      messages: [{ role: 'user', content: { type: 'text', text } }],
+    }
+  }
+}
+
+function describePrompt(prompt: Prompt) {
+  return {
+    name: prompt.name,
+    title: prompt.title,
+    description: prompt.description,
+    arguments: prompt.arguments.map(({ name, description, required }) => ({
+      name,
+      description,
+      required: required === true,
+    })),
   }
 }
 
