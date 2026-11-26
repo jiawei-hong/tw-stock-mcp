@@ -24,12 +24,11 @@ import { taipeiToday } from './market.js'
  *   YYYYMMDD (STOCK_DAY echoes the 1st of the month), rows in `data` or `tables[].data`.
  *   No data: `stat` "很抱歉，沒有符合條件的資料!" and no `date`.
  * - TPEx tradingStock, 3itrade_hedge_result.php, margin_bal_result.php,
- *   stk_quote_result.php: `stat` "ok", `date` YYYYMMDD (tables carry ROC dates),
+ *   afterTrading/dailyQuotes: `stat` "ok", `date` YYYYMMDD (tables carry ROC dates),
  *   rows in `tables[].data`. No data: `stat` "ok" with empty `tables[0].data`.
- * - TPEx stk_quote_result.php ignores `d` and answers with the latest day
- *   (asked for 2026-11-12 and 2026-11-13, got `date` 20261125), so the date check
- *   keeps it out of the cache. /www/zh-tw/afterTrading/dailyQuotes?date=2026/11/13
- *   honours the date.
+ * - The date check matters: the older TPEx stk_quote_result.php ignored `d` and
+ *   answered with the latest day (asked for 2026-11-12, got `date` 20261125).
+ *   core/daily-quotes now uses dailyQuotes, which honours the date.
  *
  * Layout: <dir>/v<FORMAT_VERSION>/<2 hex>/<sha256 of URL and body>.json, each a
  * JSON envelope { version, url, body, date, saved_at, data }. A format change bumps

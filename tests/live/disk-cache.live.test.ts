@@ -22,6 +22,7 @@ const endpoints: { name: string; url: string; date: string }[] = [
   { name: 'TWSE MI_INDEX', url: `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=${compact(PAST_DAY)}&type=ALLBUT0999&response=json`, date: compact(PAST_DAY) },
   { name: 'TWSE MI_MARGN', url: `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${compact(PAST_DAY)}&selectType=ALL&response=json`, date: compact(PAST_DAY) },
   { name: 'TPEx margin', url: `https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d=${encodeURIComponent(roc(PAST_DAY))}`, date: compact(PAST_DAY) },
+  { name: 'TPEx dailyQuotes', url: `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=${encodeURIComponent(PAST_DAY.replaceAll('-', '/'))}&type=EW&response=json`, date: compact(PAST_DAY) },
 ]
 
 type Envelope = { stat?: unknown; date?: unknown; data?: unknown; tables?: unknown }
@@ -59,20 +60,6 @@ describe('disk cache envelope contract', () => {
       TIMEOUT_MS
     )
   }
-
-  it(
-    'TPEx stk_quote_result: OK status, a YYYYMMDD date and rows',
-    async () => {
-      // This endpoint ignores `d` (it answers with the latest day), so only the shape is checked.
-      const body = await fetchJson(
-        `https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&o=json&d=${encodeURIComponent(roc(PAST_DAY))}&s=0%2Casc%2C0`
-      )
-      expect(String(body.stat).toLowerCase()).toBe('ok')
-      expect(body.date).toMatch(/^\d{8}$/)
-      expect(rowCount(body)).toBeGreaterThan(0)
-    },
-    TIMEOUT_MS
-  )
 
   it(
     'TWSE no-data day: a non-OK status',

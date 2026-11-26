@@ -23,9 +23,9 @@ import { DailyCache } from './trading-day.js'
  * Neither source gives a security's total volume, which its share of volume needs:
  * - TWSE: MI_INDEX via core/daily-quotes. Its volume includes regular, odd-lot, after-hours
  *   fixed-price and block trades, the same basis as TWSE's market-wide percentage.
- * - TPEx: www/zh-tw/afterTrading/otc (type=EW), verified the same day. It is used because the legacy
- *   stk_quote_result.php behind core/daily-quotes ignores `d` and always serves the latest day. Its
- *   volume is regular-session round lots only (no odd-lot or fixed-price trades, about 1% less).
+ * - TPEx: www/zh-tw/afterTrading/otc (type=EW), verified the same day. It was chosen while
+ *   core/daily-quotes still used stk_quote_result.php, which ignored `d`; core/daily-quotes now honours
+ *   the date. Its volume is regular-session round lots only (no odd-lot or fixed-price trades, about 1% less).
  */
 
 export type DayTradeRow = {
