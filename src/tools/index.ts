@@ -1,4 +1,5 @@
 import { compareStocksTool } from './compare-stocks.js'
+import { getDayTradingTool } from './get-day-trading.js'
 import { getFundamentalsTool } from './get-fundamentals.js'
 import { getHistoryTool } from './get-history.js'
 import { getInstitutionalTool } from './get-institutional.js'
@@ -24,6 +25,7 @@ export const tools = [
   getOwnershipTool,
   getInstitutionalTool,
   getMarginTradingTool,
+  getDayTradingTool,
   getMarketEventsTool,
   getMarketIndexTool,
   getMarketOverviewTool,
