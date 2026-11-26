@@ -135,8 +135,9 @@ type Check = { label: string; groups: string[][]; industries?: readonly Industry
 const CODE_KEYS = ['Code', '公司代號', 'SecuritiesCompanyCode']
 const STATEMENT_CHECKS: Record<'income' | 'balance', Check[]> = {
   income: [
-    // Banks have no revenue line: the parser adds 利息淨收益 and 利息以外淨損益.
-    { label: 'revenue', groups: [['營業收入'], ['收益'], ['收入'], ['利息淨收益', '利息以外淨損益']] },
+    // Banks and financial holdings have no revenue line: the parser adds 利息淨收益 and
+    // 利息以外淨損益 (banks) or 利息以外淨收益 (financial holdings).
+    { label: 'revenue', groups: [['營業收入'], ['收益'], ['收入'], ['利息淨收益', '利息以外淨損益'], ['利息淨收益', '利息以外淨收益']] },
     { label: 'net income', groups: [['淨利（淨損）歸屬於母公司業主'], ['淨利（損）歸屬於母公司業主'], ['本期淨利（淨損）']] },
     { label: 'EPS', groups: [['基本每股盈餘（元）'], ['EPS']] },
     { label: 'gross profit', groups: [['營業毛利（毛損）淨額'], ['營業毛利（毛損）']], industries: ['ci'] },

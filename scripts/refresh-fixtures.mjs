@@ -89,7 +89,7 @@ const ENDPOINTS = {
   'twse-valuation': () => `${TWSE}/rwd/zh/afterTrading/BWIBBU_d?date=&selectType=ALL&response=json`,
   'twse-foreign-ownership': () => `${TWSE}/rwd/zh/fund/MI_QFIIS?date=&selectType=ALLBUT0999&response=json`,
 
-  'tpex-daily': ({ date }) => `${TPEX}/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?${query({ l: 'zh-tw', o: 'json', d: roc(date), s: '0,asc,0' })}`,
+  'tpex-daily': ({ date }) => `${TPEX}/www/zh-tw/afterTrading/dailyQuotes?${query({ date: date.replaceAll('-', '/'), type: 'EW', response: 'json' })}`,
   'tpex-history': ({ date, code }) => `${TPEX}/www/zh-tw/afterTrading/tradingStock?${query({ code, date: `${date.slice(0, 7).replace('-', '/')}/01`, response: 'json' })}`,
   'tpex-institutional': ({ date }) => `${TPEX}/web/stock/3insti/daily_trade/3itrade_hedge_result.php?${query({ l: 'zh-tw', o: 'json', se: 'EW', d: roc(date) })}`,
   'tpex-margin': ({ date }) => `${TPEX}/web/stock/margin_trading/margin_balance/margin_bal_result.php?${query({ l: 'zh-tw', o: 'json', d: roc(date) })}`,

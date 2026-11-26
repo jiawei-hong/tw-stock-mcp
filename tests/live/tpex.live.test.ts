@@ -45,7 +45,7 @@ describe('www.tpex.org.tw', () => {
     expect(bars.every((bar) => bar.volume !== null && bar.turnover !== null && bar.trades !== null), 'numeric volume, turnover, trades').toBe(true)
   })
 
-  test('web/stock/aftertrading/daily_close_quotes/stk_quote_result.php (daily quotes)', async () => {
+  test('www/zh-tw/afterTrading/dailyQuotes (daily quotes)', async () => {
     const report = await getJson<Report>(tpexDailyUrl(session.date), 90_000)
     const table = firstTable(report)
     // parseTpexDaily: code 0, name 1, close 2, change 3, open 4, high 5, low 6, volume 8, turnover 9, trades 10.
