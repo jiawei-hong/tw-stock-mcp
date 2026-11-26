@@ -364,7 +364,7 @@ describe('call sites', () => {
   it('keeps past TWSE daily quotes, and not a TPEx answer for the wrong day', async () => {
     stubFetch({
       'www.twse.com.tw': () => twseTables(PAST, [{ title: '每日收盤行情', data: [['2330', '台積電', '1', '1', '1', '1', '1', '1', '1005', '+', '5']] }]),
-      // stk_quote_result.php answers with the latest day whatever `d` says.
+      // An answer for another day, as the older stk_quote_result.php gave whatever `d` said.
       'www.tpex.org.tw': () => tpexTables(TODAY, [['6488', '環球晶', '700']]),
     })
     await loadTwseDaily(PAST)

@@ -10,25 +10,25 @@ const numeric = /^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/
 
 describe('compare_stocks live endpoints', () => {
   it(
-    'TPEx afterTrading/otc answers for the requested past day, with code, name and close columns',
+    'TPEx dailyQuotes answers for the requested past day, with the columns parseTpexDaily reads',
     async () => {
-      const url = `https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?date=${PAST_DAY.iso.replaceAll('-', '%2F')}&type=EW&id=&response=json`
+      const url = `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=${PAST_DAY.iso.replaceAll('-', '%2F')}&type=EW&response=json`
       const response = await fetch(url, { signal: AbortSignal.timeout(TIMEOUT_MS) })
       expect(response.ok).toBe(true)
       const body = (await response.json()) as { stat: unknown; date: unknown; tables: { fields: unknown[]; data: unknown[][] }[] }
 
       expect(body.stat).toBe('ok')
-      // The older stk_quote_result.php ignores its date; this one must echo the day asked for.
+      // The older stk_quote_result.php ignored its date; loadTpexDaily rejects any other day than the one asked for.
       expect(body.date).toBe(PAST_DAY.compact)
       const [table] = body.tables
-      const fields = table.fields.map(header)
-      for (const name of ['代號', '名稱', '收盤']) expect(fields).toContain(name)
+      // parseTpexDaily reads these positions; volume is shares including odd lots, turnover TWD.
+      const expected = { 0: '代號', 1: '名稱', 2: '收盤', 3: '漲跌', 4: '開盤', 5: '最高', 6: '最低', 8: '成交股數', 9: '成交金額(元)', 10: '成交筆數' }
+      for (const [position, name] of Object.entries(expected)) expect(header(table.fields[Number(position)])).toBe(name)
       expect(table.data.length).toBeGreaterThan(500)
 
-      const close = fields.indexOf('收盤')
-      const row = table.data.find((entry) => entry[fields.indexOf('代號')] === '6488')
-      expect(typeof row?.[fields.indexOf('名稱')]).toBe('string')
-      expect(String(row?.[close])).toMatch(numeric)
+      const row = table.data.find((entry) => entry[0] === '6488')
+      expect(typeof row?.[1]).toBe('string')
+      for (const position of [2, 8, 9, 10]) expect(String(row?.[position]).trim()).toMatch(numeric)
     },
     TIMEOUT_MS
   )

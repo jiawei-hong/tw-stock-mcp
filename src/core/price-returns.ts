@@ -1,26 +1,14 @@
-import { loadTwseDaily } from './daily-quotes.js'
-import { requestJson } from './http.js'
-import { compactDateToIso, type Market, strictNumber } from './market.js'
-import { DailyCache, findTradingDay, isWeekend, previousDay } from './trading-day.js'
+import { type DailyQuote, loadTpexDaily, loadTwseDaily } from './daily-quotes.js'
+import type { Market } from './market.js'
+import { findTradingDay, isWeekend, previousDay } from './trading-day.js'
 
 /**
  * Closing prices for a whole market on one trading day, and the snapshots
  * that price returns over calendar-month horizons are measured from. Each
  * horizon costs one request per market, however many stocks are compared.
- *
- * - TWSE: MI_INDEX through loadTwseDaily (daily-quotes.ts), sharing its cache.
- *   It honours past dates (checked back to 2025-11-24 on 2026-11-25).
- * - TPEx: www/zh-tw/afterTrading/otc?date=YYYY/MM/DD&type=EW, verified against
- *   live responses on 2026-11-25. It answers { stat: "ok", date: "20251124",
- *   tables: [{ fields, data }] } and echoes the requested date. Headers carry
- *   stray spaces and <br> ("收盤 ", "成交股數  "). type=EW covers every stock and
- *   ETF (plus ETNs and preferreds) but no warrants or convertible bonds. A
- *   security without trades has "----" as its close. Weekends and holidays
- *   answer "ok" with no rows. Only code, name and close are read: its volume
- *   and turnover count board lots only, so they differ from the daily totals.
- *   The older stk_quote_result.php that loadTpexDaily uses ignores its `d`
- *   parameter and always answers with the latest trading day (checked
- *   2026-11-25), so it cannot give a past close.
+ * Both exchanges come through daily-quotes.ts and share its caches: TWSE
+ * MI_INDEX (honours past dates, checked back to 2025-11-24 on 2026-11-25) and
+ * TPEx dailyQuotes, which rejects an answer for any day but the one asked for.
  */
 
 export type Close = { name: string; close: number }
@@ -34,64 +22,13 @@ export type Horizon = keyof typeof HORIZONS
 /** Walk back this many calendar days at most, enough for the Lunar New Year break. */
 const MAX_LOOKBACK_DAYS = 14
 
-export function tpexClosesUrl(date: string): string {
-  const query = new URLSearchParams({ date: date.replaceAll('-', '/'), type: 'EW', id: '', response: 'json' })
-  return `https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?${query}`
-}
-
-const header = (value: unknown) => String(value ?? '').replace(/<[^>]*>/g, '').replace(/\s+/g, '')
-
-type TpexTable = { fields?: unknown; data?: unknown }
-
-/** Parses the dated TPEx closing quotes; null when the exchange has none for `date`. */
-export function parseTpexCloses(data: unknown, date: string): Closes | null {
-  if (!data || typeof data !== 'object') throw new Error('Invalid TPEx closing quotes response')
-  const response = data as { stat?: unknown; date?: unknown; tables?: unknown }
-  if (typeof response.stat !== 'string') throw new Error('Invalid TPEx closing quotes status')
-  if (response.stat.toLowerCase() !== 'ok') {
-    if (response.stat.includes('沒有符合條件')) return null
-    throw new Error(`TPEx closing quotes unavailable: ${response.stat}`)
-  }
-  const answered = compactDateToIso(typeof response.date === 'string' ? response.date : undefined)
-  if (!answered) throw new Error('TPEx closing quotes response has no date')
-  // Never label another day's closes with the requested date.
-  if (answered !== date) return null
-
-  const table = (Array.isArray(response.tables) ? response.tables[0] : undefined) as TpexTable | undefined
-  const rows = table?.data
-  if (!Array.isArray(rows) || !rows.length) return null
-  const headers = table?.fields
-  const fields = Array.isArray(headers) ? headers.map(header) : []
-  const index = { code: fields.indexOf('代號'), name: fields.indexOf('名稱'), close: fields.indexOf('收盤') }
-  if (Object.values(index).some((value) => value < 0)) throw new Error('Unexpected TPEx closing quotes layout')
-
-  const closes: Closes = new Map()
-  for (const row of rows) {
-    if (!Array.isArray(row)) continue
-    const code = String(row[index.code] ?? '').trim().toUpperCase()
-    const close = strictNumber(row[index.close])
-    if (!code || close === null || close <= 0) continue
-    closes.set(code, { name: String(row[index.name] ?? '').trim(), close })
-  }
-  return closes.size ? closes : null
-}
-
-const cache = new DailyCache()
-
-export function resetPriceReturnsCache(): void {
-  cache.clear()
-}
-
-export function loadTpexCloses(date: string, signal?: AbortSignal): Promise<Closes | null> {
-  const url = tpexClosesUrl(date)
-  return cache.get(url, date, async () => parseTpexCloses(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 }), date))
-}
+const closesOf = (quotes: readonly DailyQuote[]): Closes =>
+  new Map(quotes.map((quote) => [quote.code, { name: quote.name, close: quote.close }]))
 
 /** Every closing price on `market` for `date`, or null for a day without trading. */
 export async function loadCloses(market: Market, date: string, signal?: AbortSignal): Promise<Closes | null> {
-  if (market === 'otc') return loadTpexCloses(date, signal)
-  const daily = await loadTwseDaily(date, signal)
-  return daily ? new Map(daily.quotes.map((quote) => [quote.code, { name: quote.name, close: quote.close }])) : null
+  const quotes = market === 'otc' ? await loadTpexDaily(date, signal) : (await loadTwseDaily(date, signal))?.quotes
+  return quotes ? closesOf(quotes) : null
 }
 
 /** The same day `months` calendar months earlier, clamped to the end of a shorter month. */

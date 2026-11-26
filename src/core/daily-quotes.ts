@@ -1,13 +1,21 @@
 import { cacheIfPastDay } from './disk-cache.js'
 import { requestJson } from './http.js'
 import type { Market } from './market.js'
-import { strictNumber } from './market.js'
+import { compactDateToIso, strictNumber } from './market.js'
 import { DailyCache } from './trading-day.js'
 
 /**
  * End-of-day market data: TWSE MI_INDEX (closing quotes, indices, turnover,
  * breadth) and TPEx daily close quotes. Column layouts verified against live
  * responses for 2026-11-13; they match tw-stock-cli src/adapters/rank.ts.
+ *
+ * TPEx is read from www/zh-tw/afterTrading/dailyQuotes (verified 2026-11-26):
+ * it honours `date` (YYYY/MM/DD), echoes it as `date` ("20251124"), and has
+ * no rows on weekends and holidays. For 2026-11-26 its 13,832 rows were
+ * identical to those of the older stk_quote_result.php: same 19 columns, volume
+ * in shares including odd lots, turnover in TWD. That older endpoint ignores
+ * its `d` and always answers with the latest day (checked 2026-11-25), so an
+ * answer for any day other than the one asked for is rejected, never relabelled.
  */
 
 export type DailyQuote = {
@@ -145,10 +153,21 @@ export function parseTwseDaily(data: unknown): TwseDaily | null {
   return { quotes, indices, turnover, breadth }
 }
 
-export function parseTpexDaily(data: unknown): DailyQuote[] | null {
+/**
+ * With `date` (YYYY-MM-DD), rows the exchange says are for another day give
+ * null, so a trading-day walk moves on instead of mislabelling them.
+ */
+export function parseTpexDaily(data: unknown, date?: string): DailyQuote[] | null {
   const tables = tablesOf(data)
   if (!tables) return null
-  const quotes = rowsOf(tables[0]).flatMap((row): DailyQuote[] => {
+  const rows = rowsOf(tables[0])
+  if (!rows.length) return null
+  if (date !== undefined) {
+    const answered = compactDateToIso(String((data as { date?: unknown }).date ?? ''))
+    if (!answered) throw new Error('TPEx daily quotes response has no date, so its day cannot be checked')
+    if (answered !== date) return null
+  }
+  const quotes = rows.flatMap((row): DailyQuote[] => {
     const code = String(row[0] ?? '').trim()
     const close = strictNumber(row[2])
     if (!code || close === null || close <= 0) return []
@@ -169,9 +188,8 @@ export function twseDailyUrl(date: string): string {
 }
 
 export function tpexDailyUrl(date: string): string {
-  const [year, month, day] = date.split('-')
-  const query = new URLSearchParams({ l: 'zh-tw', o: 'json', d: `${Number(year) - 1911}/${month}/${day}`, s: '0,asc,0' })
-  return `https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?${query}`
+  const query = new URLSearchParams({ date: date.replaceAll('-', '/'), type: 'EW', response: 'json' })
+  return `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?${query}`
 }
 
 const cache = new DailyCache()
@@ -187,5 +205,7 @@ export function loadTwseDaily(date: string, signal?: AbortSignal): Promise<TwseD
 
 export function loadTpexDaily(date: string, signal?: AbortSignal): Promise<DailyQuote[] | null> {
   const url = tpexDailyUrl(date)
-  return cache.get(url, date, async () => parseTpexDaily(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) })))
+  return cache.get(url, date, async () =>
+    parseTpexDaily(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), date)
+  )
 }

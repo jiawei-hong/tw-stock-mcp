@@ -8,7 +8,7 @@ import { stubFetch } from './fixtures.js'
 const context = { signal: new AbortController().signal }
 const fmt = (value: number) => value.toLocaleString('en-US')
 
-// Rows shaped like TWSE MI_INDEX 每日收盤行情 and TPEx stk_quote_result.
+// Rows shaped like TWSE MI_INDEX 每日收盤行情 and TPEx dailyQuotes.
 const twseQuote = (code: string, name: string, close: string, turnover: string) => [
   code, name, '1,000', '10', turnover, close, close, close, close, '<p style= color:red>+</p>', '1.00', '', '', '', '', '',
 ]
@@ -77,7 +77,7 @@ type Dataset = 'twseQuotes' | 'tpexQuotes' | 't86' | 'tpexInsti' | 'twseMargin' 
 /** Published data for any asked day (YYYYMMDD); tests override a dataset to make it missing or failing. */
 const published: Record<Dataset, (date: string) => unknown> = {
   twseQuotes: () => ({ stat: 'OK', tables: [{ title: '每日收盤行情(全部(不含權證、牛熊證))', data: twseQuotes }] }),
-  tpexQuotes: () => ({ stat: 'ok', tables: [{ data: tpexQuotes }] }),
+  tpexQuotes: (date) => ({ stat: 'ok', date, tables: [{ data: tpexQuotes }] }),
   t86: (date) => ({ stat: 'OK', date, data: t86Rows }),
   tpexInsti: () => ({ stat: 'ok', tables: [{ data: tpexInstiRows }] }),
   twseMargin: (date) => ({
@@ -93,16 +93,16 @@ function datasetOf(url: URL): Dataset {
   if (path.endsWith('/MI_INDEX')) return 'twseQuotes'
   if (path.endsWith('/T86')) return 't86'
   if (path.endsWith('/MI_MARGN')) return 'twseMargin'
-  if (path.endsWith('/stk_quote_result.php')) return 'tpexQuotes'
+  if (path.endsWith('/dailyQuotes')) return 'tpexQuotes'
   if (path.endsWith('/3itrade_hedge_result.php')) return 'tpexInsti'
   if (path.endsWith('/margin_bal_result.php')) return 'tpexMargin'
   throw new TypeError(`fetch failed: unexpected request ${url}`)
 }
 
-/** The day a request asks for, as YYYYMMDD (TPEx uses ROC dates). */
+/** The day a request asks for, as YYYYMMDD (TPEx uses ROC dates or YYYY/MM/DD). */
 function askedDate(url: URL): string {
   const roc = url.searchParams.get('d')
-  if (!roc) return url.searchParams.get('date') ?? ''
+  if (!roc) return (url.searchParams.get('date') ?? '').replaceAll('/', '')
   const [year, month, day] = roc.split('/')
   return `${Number(year) + 1911}${month}${day}`
 }

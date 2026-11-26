@@ -1,13 +1,7 @@
 import { resetDailyQuotesCache } from '../src/core/daily-quotes.js'
 import { resetFundamentalsCache } from '../src/core/fundamentals.js'
 import { resetOwnershipCache } from '../src/core/ownership.js'
-import {
-  monthsBefore,
-  parseTpexCloses,
-  resetPriceReturnsCache,
-  tpexClosesUrl,
-  tradingDayOnOrBefore,
-} from '../src/core/price-returns.js'
+import { monthsBefore, tradingDayOnOrBefore } from '../src/core/price-returns.js'
 import { resetSecurityCache } from '../src/core/securities.js'
 import { compareStocksTool } from '../src/tools/compare-stocks.js'
 import { stubFetch, tdccRecords } from './fixtures.js'
@@ -36,20 +30,19 @@ const twseDaily = (date: string, closes: Record<string, string>) => ({
   ],
 })
 
-// TPEx www/zh-tw/afterTrading/otc, with the live headers' stray spaces and <br> (2026-11-25).
+// TPEx www/zh-tw/afterTrading/dailyQuotes rows (19 columns), shaped like the live response (2026-11-26).
 const TPEX_FIELDS = [
-  '代號', '名稱', '收盤 ', '漲跌', '開盤 ', '最高 ', '最低', '成交股數  ', ' 成交金額(元)', ' 成交筆數 ', '最後買價', '最後買量<br>(張數)',
-  '最後賣價', '最後賣量<br>(張數)', '發行股數 ', '次日漲停價 ', '次日跌停價',
+  '代號', '名稱', '收盤', '漲跌', '開盤', '最高', '最低', '均價', '成交股數', '成交金額(元)', '成交筆數', '最後買價', '最後買量(張數)',
+  '最後賣價', '最後賣量(張數)', '發行股數', '次日 參考價', '次日 漲停價', '次日 跌停價',
 ]
 const tpexRow = (code: string, close: string) => [
-  code, NAMES[code] ?? code, close, '+1.00', close, close, close, '1,000,000', '100,000,000', '1,000', close, '2', close, '11',
-  '528,113,725', '524.00', '429.50',
+  code, NAMES[code] ?? code, close, '+1.00', close, close, close, close, '1,000,000', '100,000,000', '1,000', close, '2', close, '11',
+  '528,113,725', close, '524.00', '429.50',
 ]
-const tpexCloses = (date: string, rows: unknown[][]) => ({
+const tpexDaily = (date: string, rows: unknown[][]) => ({
   date,
-  flagField: '張數',
   stat: 'ok',
-  tables: [{ title: '上櫃股票每日收盤行情(不含定價)', fields: TPEX_FIELDS, data: rows }],
+  tables: [{ title: '上櫃股票行情', fields: TPEX_FIELDS, data: rows }, { title: '管理股票', fields: TPEX_FIELDS, data: [] }],
 })
 
 // Closes by trading day. 2026-08-25 is treated as a holiday; 2317 was not listed a year ago.
@@ -138,10 +131,10 @@ function routes(overrides: Overrides = {}) {
       return []
     },
     'www.tpex.org.tw': (url) => {
-      if (url.pathname === '/www/zh-tw/afterTrading/otc') {
+      if (url.pathname === '/www/zh-tw/afterTrading/dailyQuotes') {
         if (overrides.tpexDaily) return overrides.tpexDaily(url)
         const date = (url.searchParams.get('date') ?? '').replaceAll('/', '')
-        return tpexCloses(date, TPEX_CLOSES[date] ? [tpexRow('6488', TPEX_CLOSES[date])] : [])
+        return tpexDaily(date, TPEX_CLOSES[date] ? [tpexRow('6488', TPEX_CLOSES[date])] : [])
       }
       if (url.pathname === '/www/zh-tw/insti/qfii') return overrides.tpexForeign ? overrides.tpexForeign(url) : tpexForeign
       if (url.pathname.endsWith('/tpex_mainboard_peratio_analysis')) return [tpexValuation]
@@ -155,12 +148,11 @@ function routes(overrides: Overrides = {}) {
 
 const dailyCalls = (calls: URL[]) =>
   calls
-    .filter((url) => url.pathname.endsWith('/MI_INDEX') || url.pathname === '/www/zh-tw/afterTrading/otc')
+    .filter((url) => url.pathname.endsWith('/MI_INDEX') || url.pathname === '/www/zh-tw/afterTrading/dailyQuotes')
     .map((url) => `${url.hostname === 'www.twse.com.tw' ? 'tse' : 'otc'} ${url.searchParams.get('date')}`)
 
 beforeEach(() => {
   resetDailyQuotesCache()
-  resetPriceReturnsCache()
   resetFundamentalsCache()
   resetOwnershipCache()
   resetSecurityCache()
@@ -191,30 +183,6 @@ describe('price return helpers', () => {
     expect(await tradingDayOnOrBefore('2026-10-25', load)).toEqual({ date: '2026-10-21', data: 'data' })
     expect(asked).toEqual(['2026-10-23', '2026-10-22', '2026-10-21'])
     expect(await tradingDayOnOrBefore('2026-10-25', async () => null, 5)).toBeNull()
-  })
-
-  it('reads the dated TPEx closes by header and skips securities without a trade', () => {
-    const closes = parseTpexCloses(
-      tpexCloses('20251124', [tpexRow('6488', '378.00'), tpexRow('8299', '1,055.00'), ['2235', '謚源', '----', '---']]),
-      '2025-11-24'
-    )
-    expect(closes).toEqual(new Map([['6488', { name: '環球晶', close: 378 }], ['8299', { name: '8299', close: 1055 }]]))
-    expect(tpexClosesUrl('2025-11-24')).toBe('https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?date=2025%2F11%2F24&type=EW&id=&response=json')
-  })
-
-  it('treats a day without rows, or an answer for another day, as no data', () => {
-    expect(parseTpexCloses(tpexCloses('20261122', []), '2026-11-22')).toBeNull()
-    // The older TPEx endpoint answered every date with the latest day; never relabel such an answer.
-    expect(parseTpexCloses(tpexCloses('20261125', [tpexRow('6488', '477.00')]), '2025-11-24')).toBeNull()
-    expect(parseTpexCloses(NO_DATA, '2026-11-25')).toBeNull()
-  })
-
-  it('rejects an error stat or an unknown layout', () => {
-    expect(() => parseTpexCloses({ stat: '系統忙碌中' }, '2026-11-25')).toThrow('TPEx closing quotes unavailable: 系統忙碌中')
-    expect(() => parseTpexCloses({ stat: 'ok', tables: [] }, '2026-11-25')).toThrow('has no date')
-    expect(() => parseTpexCloses({ stat: 'ok', date: '20261125', tables: [{ fields: ['x'], data: [['1']] }] }, '2026-11-25')).toThrow(
-      'Unexpected TPEx closing quotes layout'
-    )
   })
 })
 

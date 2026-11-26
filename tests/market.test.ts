@@ -60,13 +60,14 @@ function twseResponse() {
   }
 }
 
-// Real TPEx stk_quote_result row (2026-11-13).
+// Real TPEx daily quotes row (2026-11-13; dailyQuotes and stk_quote_result.php share the layout).
 const tpexQuote = (code: string, close: string, change: string, turnover: string) => [
   code, '環球晶', close, change, '645.00', '658.00', '623.00', '640.25', '8,891,386', turnover, '15,419',
   '629.00', '72', '630.00', '4', '528,113,725', '630.00', '693.00', '567.00',
 ]
 const tpexResponse = () => ({
   stat: 'ok',
+  date: '20261113',
   tables: [{ data: [tpexQuote('6488', '630.00', '+8.00', '5,692,722,244'), tpexQuote('712345', '1.00', '+0.50', '1,000')] }],
 })
 
