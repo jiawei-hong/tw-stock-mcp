@@ -1,3 +1,4 @@
+import { cacheIfPastDay } from './disk-cache.js'
 import { requestJson } from './http.js'
 import { type Market, strictNumber } from './market.js'
 import { DailyCache } from './trading-day.js'
@@ -145,11 +146,11 @@ export function resetInstitutionalCache(): void {
 export function loadInstitutional(date: string, market: Market, signal?: AbortSignal) {
   const url = institutionalUrl(date, market)
   return cache.get(url, date, async () =>
-    parseInstitutional(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 }), market)
+    parseInstitutional(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market)
   )
 }
 
 export function loadSummary(date: string, signal?: AbortSignal) {
   const url = summaryUrl(date)
-  return cache.get(url, date, async () => parseSummary(await requestJson<unknown>(url, { signal }), date))
+  return cache.get(url, date, async () => parseSummary(await requestJson<unknown>(url, { signal, cache: cacheIfPastDay(date) }), date))
 }

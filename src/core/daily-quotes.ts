@@ -1,3 +1,4 @@
+import { cacheIfPastDay } from './disk-cache.js'
 import { requestJson } from './http.js'
 import type { Market } from './market.js'
 import { strictNumber } from './market.js'
@@ -181,10 +182,10 @@ export function resetDailyQuotesCache(): void {
 
 export function loadTwseDaily(date: string, signal?: AbortSignal): Promise<TwseDaily | null> {
   const url = twseDailyUrl(date)
-  return cache.get(url, date, async () => parseTwseDaily(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 })))
+  return cache.get(url, date, async () => parseTwseDaily(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) })))
 }
 
 export function loadTpexDaily(date: string, signal?: AbortSignal): Promise<DailyQuote[] | null> {
   const url = tpexDailyUrl(date)
-  return cache.get(url, date, async () => parseTpexDaily(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 })))
+  return cache.get(url, date, async () => parseTpexDaily(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) })))
 }

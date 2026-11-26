@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 
+import { cacheIfClosedMonth } from './disk-cache.js'
 import { requestJson } from './http.js'
 import { isIsoDate, type Market, marketDate, strictNumber, taipeiToday } from './market.js'
 
@@ -137,7 +138,7 @@ async function loadMonth(
   if (hit && hit.expiresAt > Date.now()) return { bars: await hit.bars, cached: true }
 
   const ttl = month < taipeiToday().slice(0, 7) ? PAST_MONTH_TTL_MS : CURRENT_MONTH_TTL_MS
-  const bars = requestJson<unknown>(url, { signal }).then((data) => parseHistory(data, month, market))
+  const bars = requestJson<unknown>(url, { signal, cache: cacheIfClosedMonth(month) }).then((data) => parseHistory(data, month, market))
   cache.set(url, { expiresAt: Date.now() + ttl, bars })
   try {
     return { bars: await bars, cached: false }

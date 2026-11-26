@@ -1,3 +1,4 @@
+import { cacheIfPastDay } from './disk-cache.js'
 import { requestJson } from './http.js'
 import { type Market, strictNumber } from './market.js'
 import { DailyCache } from './trading-day.js'
@@ -221,6 +222,6 @@ export function resetMarginCache(): void {
 export function loadMargin(date: string, market: Market, signal?: AbortSignal) {
   const url = marginUrl(date, market)
   return cache.get(url, date, async () =>
-    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 }), market, date)
+    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market, date)
   )
 }
