@@ -15,19 +15,19 @@ Requires Node.js 22 or later. Pin a version so an upstream change can never reac
 **Claude Code**
 
 ```bash
-claude mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.2.0
+claude mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.3.0
 ```
 
 **Codex CLI**
 
 ```bash
-codex mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.2.0
+codex mcp add tw-stock -- npx -y npm:tw-stock-mcp@0.3.0
 ```
 
 **VS Code**
 
 ```bash
-code --add-mcp '{"name":"tw-stock","command":"npx","args":["-y","npm:tw-stock-mcp@0.2.0"]}'
+code --add-mcp '{"name":"tw-stock","command":"npx","args":["-y","npm:tw-stock-mcp@0.3.0"]}'
 ```
 
 **Claude Desktop, Cursor and other clients** — add to the client's MCP config (`claude_desktop_config.json`, `~/.cursor/mcp.json`, …):
@@ -37,7 +37,7 @@ code --add-mcp '{"name":"tw-stock","command":"npx","args":["-y","npm:tw-stock-mc
   "mcpServers": {
     "tw-stock": {
       "command": "npx",
-      "args": ["-y", "npm:tw-stock-mcp@0.2.0"]
+      "args": ["-y", "npm:tw-stock-mcp@0.3.0"]
     }
   }
 }
@@ -93,7 +93,7 @@ Conventions:
 **HTTP mode.** `tw-stock-mcp --http [port]` serves Streamable HTTP at `http://127.0.0.1:8886/mcp`; stdio stays the default. `--host` changes the address, and a non-loopback address requires `TW_STOCK_MCP_TOKEN`, which clients send as `Authorization: Bearer <token>`. Browser origins other than localhost are rejected unless allowed with `--allow-origin`.
 
 ```bash
-npx -y npm:tw-stock-mcp@0.2.0 --http
+npx -y npm:tw-stock-mcp@0.3.0 --http
 claude mcp add --transport http tw-stock http://127.0.0.1:8886/mcp
 ```
 
