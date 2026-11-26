@@ -10,6 +10,7 @@ import {
 import { loadInstitutional } from '../core/institutional.js'
 import { loadMargin } from '../core/margin.js'
 import type { Market } from '../core/market.js'
+import { INDUSTRY_NAMES, loadIndustries, resolveIndustries } from '../core/profile.js'
 import { classifySecurity, SECURITY_TYPES, type SecurityType } from '../core/securities.js'
 import { findTradingDay, noTradingDataMessage } from '../core/trading-day.js'
 import { type JsonSchema } from '../mcp/schema.js'
@@ -77,6 +78,7 @@ type Input = Bounds & {
   sort_by?: Metric
   order?: 'asc' | 'desc'
   limit?: number
+  industry?: string[]
 }
 
 type Row = {
@@ -99,6 +101,7 @@ type Row = {
   institutional_net: number | null
   margin_change: number | null
   short_change: number | null
+  industry: string | null
 }
 
 const boundProperties = Object.fromEntries(
@@ -130,6 +133,7 @@ export const screenStocksTool: Tool<Input> = {
     'Flow metrics use the same trading day as prices, so they work with `date`: foreign_net, trust_net, dealer_net and institutional_net are 外資 / 投信 / 自營商 / 三大法人 net buys in shares (negative = net sell; a stock no institution traded counts as 0), and margin_change / short_change are the day\'s 融資 / 融券 balance changes in shares (stocks not eligible for margin trading have none).',
     'For example {"sort_by": "trust_net"} lists the stocks investment trusts bought most, {"sort_by": "foreign_net", "order": "asc"} those foreign investors sold most, {"min_foreign_net": 1, "min_trust_net": 1} those both bought, and {"sort_by": "margin_change"} those whose margin balance grew most.',
     'Flows are in shares, so low-priced stocks rank higher than their TWD value suggests. Without `date`, a flow metric moves the default day back to the latest one whose flows are published (institutional around 15:00-16:30, margin around 21:00 Taipei).',
+    '`industry` keeps only the given exchange industries (exact Chinese names such as "半導體業", from the companies\' current profiles).',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -147,6 +151,13 @@ export const screenStocksTool: Tool<Input> = {
       sort_by: { type: 'string', enum: Object.keys(METRICS), description: 'Default "turnover". A flow metric ranks by that day\'s shares, e.g. "trust_net" for the stocks investment trusts bought most.' },
       order: { type: 'string', enum: ['asc', 'desc'], description: 'Default "desc".' },
       limit: { type: 'integer', minimum: 1, maximum: 100, default: 20, description: 'Rows to return. Default 20.' },
+      industry: {
+        type: 'array',
+        minItems: 1,
+        maxItems: INDUSTRY_NAMES.length,
+        items: { type: 'string', minLength: 1, maxLength: 20 },
+        description: `Keep only these exchange industries (產業別), by exact Chinese name or two-digit code, e.g. ["半導體業"] or ["航運業", "鋼鐵工業"]. Names: ${INDUSTRY_NAMES.join('、')}. Works with date and every other filter.`,
+      },
     },
     additionalProperties: false,
   },
@@ -165,6 +176,7 @@ export const screenStocksTool: Tool<Input> = {
             volume: nullableNumber, turnover: nullableNumber, pe_ratio: nullableNumber, dividend_yield: nullableNumber,
             pb_ratio: nullableNumber, revenue_yoy: nullableNumber, revenue_month: { type: ['string', 'null'] },
             ...flowProperties,
+            industry: { type: ['string', 'null'], description: 'Exchange industry (產業別); filled in only when the industry filter is used' },
           },
           required: ['code', 'name', 'market', 'price'],
         },
@@ -191,6 +203,11 @@ export const screenStocksTool: Tool<Input> = {
     const needsFundamentals = FUNDAMENTAL.some((metric) => filters[metric] || sort_by === metric)
     if (requested !== undefined && needsFundamentals) {
       throw new ToolError('Fundamental filters and sorting use the latest snapshot; remove `date` or the fundamental bounds.')
+    }
+    const industry = input.industry === undefined ? null : resolveIndustries(input.industry)
+    if (industry?.unknown.length) {
+      const unknown = industry.unknown.map((name) => `"${name}"`).join(', ')
+      throw new ToolError(`Unknown industry ${unknown}. Use exact names from this list: ${INDUSTRY_NAMES.join('、')}.`)
     }
 
     // Flows are checked on the market whose calendar picks the day (TWSE unless market is "otc"), like prices.
@@ -284,6 +301,12 @@ export const screenStocksTool: Tool<Input> = {
       }
     }
 
+    // Industry: the company profile datasets, only when the filter is used.
+    const industries = industry ? await loadIndustries(markets, signal) : null
+    for (const failure of industries?.failures ?? []) {
+      notes.push(`${EXCHANGE[failure.market]} company profiles unavailable, so those stocks lack industry and fail the industry filter: ${failure.message}`)
+    }
+
     const allowed = new Set(types)
     const rows: Row[] = quotes.flatMap((quote) => {
       const type = classifySecurity(quote.code)
@@ -301,6 +324,7 @@ export const screenStocksTool: Tool<Input> = {
         foreign_net: flowValue(quote, 'foreign_net'), trust_net: flowValue(quote, 'trust_net'),
         dealer_net: flowValue(quote, 'dealer_net'), institutional_net: flowValue(quote, 'institutional_net'),
         margin_change: flowValue(quote, 'margin_change'), short_change: flowValue(quote, 'short_change'),
+        industry: industries?.industries.get(quote.code) ?? null,
       }]
     })
 
@@ -313,6 +337,7 @@ export const screenStocksTool: Tool<Input> = {
     const direction = order === 'asc' ? 1 : -1
     const matched = rows
       .filter(passes)
+      .filter((row) => !industry || (row.industry !== null && industry.names.has(row.industry)))
       .filter((row) => row[sort_by] !== null)
       .sort((left, right) => direction * ((left[sort_by] as number) - (right[sort_by] as number)))
 
@@ -321,6 +346,6 @@ export const screenStocksTool: Tool<Input> = {
       const note = highYieldNote(row.code, valuations.get(row.code) ?? null)
       if (note) notes.push(note)
     }
-    return { date: found.date, matched: matched.length, results, filters, notes }
+    return { date: found.date, matched: matched.length, results, filters: industry ? { ...filters, industry: [...industry.names] } : filters, notes }
   },
 }

@@ -9,6 +9,7 @@ import { industryCode, INDUSTRY_NAMES, parseProfile, resolveIndustries } from '.
 import { resetSecurityCache } from '../src/core/securities.js'
 import { getFundamentalsTool } from '../src/tools/get-fundamentals.js'
 import { getStockOverviewTool } from '../src/tools/get-stock-overview.js'
+import { screenStocksTool } from '../src/tools/screen-stocks.js'
 import { misRoute, misRow, stubFetch, tdccRecords } from './fixtures.js'
 
 // Real TWSE t187ap03_L (出表日期 1151124) and TPEx mopsfin_t187ap03_O (1151125) rows, trimmed to the fields read.
@@ -305,6 +306,91 @@ describe('get_stock_overview profile, margin and foreign ownership', () => {
     expect(result.margin).toBeNull()
     expect(result.warnings).toContain(
       'Margin trading: no margin data for 2330 on 2026-11-24; it is not eligible for margin trading (e.g. newly listed or 全額交割).'
+    )
+  })
+})
+
+describe('screen_stocks industry', () => {
+  const context = { signal: new AbortController().signal }
+  // MI_INDEX 每日收盤行情 and TPEx stk_quote_result rows, shaped like the real ones.
+  const twseQuote = (code: string, name: string, close: string, turnover: string) => [
+    code, name, '1,000', '10', turnover, close, close, close, close, '<p style= color:red>+</p>', '1.00', '', '', '', '', '',
+  ]
+  const tpexQuote = (code: string, name: string, close: string, turnover: string) => [
+    code, name, close, '+5.00', close, close, close, close, '1,000,000', turnover, '2,000',
+  ]
+
+  const routes = (overrides: { tpexProfiles?: () => unknown } = {}) => ({
+    'www.twse.com.tw': () => ({
+      stat: 'OK',
+      tables: [{
+        title: '每日收盤行情',
+        data: [
+          twseQuote('2330', '台積電', '2,350.00', '73,000,000,000'),
+          twseQuote('2881', '富邦金', '90.00', '3,000,000,000'),
+          twseQuote('2442', '新美齊', '20.00', '50,000,000'),
+          twseQuote('0050', '元大台灣50', '60.00', '9,000,000,000'),
+        ],
+      }],
+    }),
+    'www.tpex.org.tw': (url: URL) => {
+      if (url.pathname.endsWith('mopsfin_t187ap03_O')) return (overrides.tpexProfiles ?? (() => [tpex6488, tpex5864]))()
+      return {
+        stat: 'ok',
+        tables: [{ data: [tpexQuote('6488', '環球晶', '480.00', '480,000,000'), tpexQuote('5864', '致和證', '20.00', '10,000,000')] }],
+      }
+    },
+    'openapi.twse.com.tw': (url: URL) => (url.pathname.endsWith('t187ap03_L') ? [twse2330, twse2881, twse2442] : []),
+  })
+
+  beforeEach(() => {
+    resetFundamentalsCache()
+    resetDailyQuotesCache()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-13T08:00:00Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the named industries on both exchanges and labels each row', async () => {
+    stubFetch(routes())
+    const result = await screenStocksTool.run({ industry: ['半導體業'] }, context)
+    expect((result.results as { code: string; industry: string }[]).map((row) => [row.code, row.industry])).toEqual([
+      ['2330', '半導體業'], ['6488', '半導體業'],
+    ])
+    expect(result).toMatchObject({ matched: 2, filters: { industry: ['半導體業'] } })
+  })
+
+  it('accepts several names, the exchanges\' own labels and codes', async () => {
+    stubFetch(routes())
+    const result = await screenStocksTool.run({ industry: ['金融業', '14'], date: '2026-11-13', max_price: 50 }, context)
+    expect((result.results as { code: string; industry: string }[]).map((row) => [row.code, row.industry])).toEqual([
+      ['2442', '建材營造'], ['5864', '金融保險業'],
+    ])
+    expect(result.filters).toEqual({ price: { max: 50 }, industry: ['金融保險業', '建材營造'] })
+  })
+
+  it('rejects an unknown name with the list of valid ones before fetching anything', async () => {
+    const { calls } = stubFetch(routes())
+    const run = screenStocksTool.run({ industry: ['半導體業', '電子業'] }, context)
+    await expect(run).rejects.toThrow('Unknown industry "電子業". Use exact names from this list: 水泥工業、食品工業')
+    await expect(run).rejects.toThrow('半導體業')
+    expect(calls).toHaveLength(0)
+  })
+
+  it('loads profiles only for the filter, and notes a market whose profiles failed', async () => {
+    const { calls } = stubFetch(routes({ tpexProfiles: notFound }))
+    const plain = await screenStocksTool.run({ limit: 2 }, context)
+    expect((plain.results as { industry: string | null }[]).map((row) => row.industry)).toEqual([null, null])
+    expect(calls.some((url) => url.pathname.includes('t187ap03'))).toBe(false)
+
+    const filtered = await screenStocksTool.run({ industry: ['半導體業'] }, context)
+    expect((filtered.results as { code: string }[]).map((row) => row.code)).toEqual(['2330'])
+    expect(filtered.notes).toContain(
+      'TPEx company profiles unavailable, so those stocks lack industry and fail the industry filter: Request failed for www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O after 1 attempt: HTTP 404'
     )
   })
 })
