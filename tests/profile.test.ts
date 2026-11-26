@@ -312,7 +312,7 @@ describe('get_stock_overview profile, margin and foreign ownership', () => {
 
 describe('screen_stocks industry', () => {
   const context = { signal: new AbortController().signal }
-  // MI_INDEX 每日收盤行情 and TPEx stk_quote_result rows, shaped like the real ones.
+  // MI_INDEX 每日收盤行情 and TPEx dailyQuotes rows, shaped like the real ones.
   const twseQuote = (code: string, name: string, close: string, turnover: string) => [
     code, name, '1,000', '10', turnover, close, close, close, close, '<p style= color:red>+</p>', '1.00', '', '', '', '', '',
   ]
@@ -335,8 +335,10 @@ describe('screen_stocks industry', () => {
     }),
     'www.tpex.org.tw': (url: URL) => {
       if (url.pathname.endsWith('mopsfin_t187ap03_O')) return (overrides.tpexProfiles ?? (() => [tpex6488, tpex5864]))()
+      // dailyQuotes echoes the day asked for (date=YYYY/MM/DD) as YYYYMMDD.
       return {
         stat: 'ok',
+        date: (url.searchParams.get('date') ?? '').replaceAll('/', ''),
         tables: [{ data: [tpexQuote('6488', '環球晶', '480.00', '480,000,000'), tpexQuote('5864', '致和證', '20.00', '10,000,000')] }],
       }
     },
