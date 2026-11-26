@@ -1,14 +1,15 @@
 import { type Dividends, loadDividends } from '../core/dividends.js'
 import { type Fundamentals, loadFundamentals } from '../core/fundamentals.js'
 import type { Market } from '../core/market.js'
+import { type CompanyProfile, loadProfiles } from '../core/profile.js'
 import { resolveSecurity } from '../core/resolve.js'
 import { type Tool } from '../mcp/server.js'
 import { describeUnresolved } from './shared.js'
 
-const SECTIONS = ['balance_sheet', 'dividends'] as const
+const SECTIONS = ['balance_sheet', 'dividends', 'profile'] as const
 type Section = (typeof SECTIONS)[number]
 type Input = { symbols: string[]; market?: Market; include?: Section[] }
-type Company = Fundamentals & { dividends?: Dividends | null }
+type Company = Fundamentals & { dividends?: Dividends | null; profile?: CompanyProfile | null }
 
 const nullableNumber = { type: ['number', 'null'] } as const
 const nullableDate = { type: ['string', 'null'], description: 'YYYY-MM-DD' } as const
@@ -20,10 +21,10 @@ export const getFundamentalsTool: Tool<Input> = {
     'Latest fundamentals for Taiwan-listed companies (TWSE and TPEx): valuation (P/E, dividend yield, P/B), the latest monthly revenue with MoM/YoY growth, and the latest quarterly income statement with EPS and margins.',
     'All amounts are TWD (converted from the exchanges\' thousands). The income statement is year-to-date (cumulative from January through the reported quarter), as filed in Taiwan.',
     'P/E uses the latest four quarters of EPS, which can lag the income statement (see earnings_period); dividend yield uses the latest annual dividend (see dividend_year and dividend_per_share). Yields above 20% are flagged in warnings because they usually reflect a one-off distribution.',
-    'Optional sections via `include`: "balance_sheet" (latest quarter\'s assets, liabilities, equity, debt ratio, current ratio, ROE and ROA, both year-to-date and annualised) and "dividends" (recent dividend resolutions with cash and stock per share, and ex-dividend days since January of last year). They are left out unless asked for.',
+    'Optional sections via `include`: "balance_sheet" (latest quarter\'s assets, liabilities, equity, debt ratio, current ratio, ROE and ROA, both year-to-date and annualised), "dividends" (recent dividend resolutions with cash and stock per share, and ex-dividend days since January of last year) and "profile" (company profile: industry, listing and founding dates, paid-in capital in TWD, chairman, general manager, website, full and English names; no business description is published). They are left out unless asked for.',
     'Only the latest month of revenue is published; there is no revenue history.',
     'ETFs and some securities have no fundamentals; such inputs are listed in `unresolved`.',
-    'Sources: TWSE / TPEx OpenAPI, refreshed daily (valuation) to monthly/quarterly (revenue, financials); ex-dividend days from the TWSE / TPEx websites.',
+    'Sources: TWSE / TPEx OpenAPI, refreshed daily (valuation, profile) to monthly/quarterly (revenue, financials); ex-dividend days from the TWSE / TPEx websites.',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -41,7 +42,7 @@ export const getFundamentalsTool: Tool<Input> = {
         maxItems: SECTIONS.length,
         items: { type: 'string', enum: SECTIONS },
         description:
-          'Extra sections to add, e.g. ["balance_sheet", "dividends"]. Omit for the default response. Each one downloads more full-market data, so ask only for what you need.',
+          'Extra sections to add, e.g. ["balance_sheet", "dividends", "profile"]. Omit for the default response. Each one downloads more full-market data, so ask only for what you need.',
       },
     },
     required: ['symbols'],
@@ -209,6 +210,30 @@ export const getFundamentalsTool: Tool<Input> = {
                 },
               },
             },
+            profile: {
+              type: ['object', 'null'],
+              description:
+                'Only present when include has "profile". Company profile (上市/上櫃公司基本資料) as filed; null when the exchange publishes none for this company or the dataset failed (see warnings).',
+              properties: {
+                full_name: { type: ['string', 'null'], description: 'Registered company name' },
+                english_short_name: { type: ['string', 'null'] },
+                industry: {
+                  type: ['string', 'null'],
+                  description: 'Exchange industry (產業別), e.g. 半導體業; the same names screen_stocks accepts in its industry filter',
+                },
+                industry_code: { type: ['string', 'null'], description: 'Two-digit 產業別 code as published, e.g. "24"' },
+                listing_date: { ...nullableDate, description: 'YYYY-MM-DD listing on the current exchange (上市 for TWSE, 上櫃 for TPEx)' },
+                founded_date: { ...nullableDate, description: 'YYYY-MM-DD of incorporation' },
+                paid_in_capital: {
+                  ...nullableNumber,
+                  description: '實收資本額, TWD, including preferred shares. For depositary receipts it is the foreign issuer\'s capital as reported.',
+                },
+                chairman: { type: ['string', 'null'] },
+                general_manager: { type: ['string', 'null'], description: 'As filed, sometimes with a title such as "總裁: 魏哲家"' },
+                website: { type: ['string', 'null'], description: 'As filed, often without http(s)://' },
+                as_of: { ...nullableDate, description: 'YYYY-MM-DD the exchange compiled the dataset' },
+              },
+            },
           },
           required: ['code', 'market', 'valuation', 'monthly_revenue', 'income_statement'],
         },
@@ -246,14 +271,26 @@ export const getFundamentalsTool: Tool<Input> = {
     for (const target of ['tse', 'otc'] as const) {
       const codes = wanted.filter((entry) => entry.markets.includes(target) && !found.has(entry.code)).map((entry) => entry.code)
       if (!codes.length) continue
-      const [result, dividends] = await Promise.all([
+      const [result, dividends, profiles] = await Promise.all([
         loadFundamentals(codes, target, signal, { balanceSheet: sections.has('balance_sheet') }),
         sections.has('dividends') ? loadDividends(codes, target, signal) : null,
+        sections.has('profile')
+          ? loadProfiles(target, signal).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))))
+          : null,
       ])
       warnings.push(...result.warnings)
       if (dividends && result.results.size) warnings.push(...dividends.warnings)
+      if (profiles instanceof Error && result.results.size) warnings.push(`Company profile unavailable: ${profiles.message}`)
       for (const [code, value] of result.results) {
-        found.set(code, dividends ? { ...value, dividends: dividends.results.get(code) ?? null } : value)
+        const company: Company = { ...value }
+        if (dividends) company.dividends = dividends.results.get(code) ?? null
+        if (profiles) {
+          company.profile = profiles instanceof Error ? null : (profiles.get(code) ?? null)
+          if (!(profiles instanceof Error) && !company.profile) {
+            warnings.push(`${code}: the exchange OpenAPI currently publishes no company profile for this company.`)
+          }
+        }
+        found.set(code, company)
       }
     }
 

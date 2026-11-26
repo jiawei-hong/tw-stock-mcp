@@ -1,7 +1,9 @@
+import { type EtfNav, loadEtfNavs, premiumPercent } from '../core/etf.js'
 import { normaliseCode, type Market } from '../core/market.js'
-import { fetchQuotes } from '../core/quotes.js'
+import { fetchQuotes, type Quote } from '../core/quotes.js'
 import { listedElsewhere } from '../core/resolve.js'
 import {
+  classifySecurity,
   DEFAULT_SECURITY_TYPES,
   SECURITY_TYPES,
   type Security,
@@ -18,6 +20,8 @@ type Unresolved = {
   suggestions: Security[]
 }
 
+type QuoteNav = Omit<EtfNav, 'code'> & { premium_percent: number | null }
+
 const MAX_SUGGESTIONS = 5
 
 const nullableNumber = { type: ['number', 'null'] } as const
@@ -26,12 +30,81 @@ const levelSchema = {
   properties: { price: { type: 'number' }, volume: { type: 'number' } },
   required: ['price', 'volume'],
 } as const
+const navSchema = {
+  type: ['object', 'null'],
+  description: 'ETFs only (absent for other securities). null when the issuer publishes no estimate or the NAV feed failed (see warnings).',
+  properties: {
+    estimated_nav: { ...nullableNumber, description: '投信或總代理人預估淨值: the issuer\'s intraday estimate, per unit' },
+    premium_percent: {
+      ...nullableNumber,
+      description: '(price / estimated_nav - 1) x 100 with this quote\'s price: positive = premium (溢價), negative = discount (折價). null without a trade price.',
+    },
+    previous_nav: { ...nullableNumber, description: '前一營業日單位淨值: the previous business day\'s official NAV; null until the issuer publishes it' },
+    date: { type: ['string', 'null'], description: 'YYYY-MM-DD (Asia/Taipei) of the issuer\'s last update' },
+    time: { type: ['string', 'null'], description: 'HH:MM:SS (Asia/Taipei) of the issuer\'s last update' },
+    units_outstanding: { ...nullableNumber, description: '已發行受益權單位數 (units)' },
+    units_change: { ...nullableNumber, description: 'Change in units outstanding from the previous day (creations minus redemptions)' },
+    underlying_zone: {
+      type: ['string', 'null'],
+      enum: ['domestic', 'asia', 'europe_americas', 'global', null],
+      description: 'Where the underlying trades. Outside Taiwan hours the estimate may not move during the session.',
+    },
+  },
+  required: ['estimated_nav', 'premium_percent', 'previous_nav', 'date', 'time'],
+} as const
+
 async function suggest(input: string, market?: Market): Promise<Security[]> {
   try {
     return (await searchSecurities(input, { market })).slice(0, MAX_SUGGESTIONS)
   } catch {
     return [] // Suggestions are best effort; never fail the quote for them.
   }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Adds `nav` to ETF quotes from one shared request; other quotes are returned unchanged.
+ * A failed feed never fails the quote: ETFs then get nav null and a warning.
+ */
+async function withNav(
+  quotes: Quote[],
+  warnings: string[],
+  signal: AbortSignal
+): Promise<(Quote | (Quote & { nav: QuoteNav | null }))[]> {
+  const isEtf = (quote: Quote) => classifySecurity(quote.code) === 'etf'
+  if (!quotes.some(isEtf)) return quotes
+  let navs: Map<string, EtfNav> | null = null
+  try {
+    navs = await loadEtfNavs(signal)
+  } catch (error) {
+    signal.throwIfAborted()
+    warnings.push(`ETF NAV feed unavailable, so ETF quotes have nav null: ${errorText(error)}. Retry in a minute for NAV and premium.`)
+  }
+  const unpublished: string[] = []
+  const result = quotes.map((quote) => {
+    if (!isEtf(quote)) return quote
+    const nav = navs?.get(quote.code)
+    if (navs && !nav) unpublished.push(quote.code)
+    if (!nav) return { ...quote, nav: null }
+    return {
+      ...quote,
+      nav: {
+        estimated_nav: nav.estimated_nav,
+        premium_percent: premiumPercent(quote.price, nav.estimated_nav),
+        previous_nav: nav.previous_nav,
+        date: nav.date,
+        time: nav.time,
+        units_outstanding: nav.units_outstanding,
+        units_change: nav.units_change,
+        underlying_zone: nav.underlying_zone,
+      },
+    }
+  })
+  if (unpublished.length) warnings.push(`No estimated NAV is published for ${unpublished.join(', ')}; nav is null.`)
+  return result
 }
 
 export const getQuoteTool: Tool<Input> = {
@@ -44,6 +117,9 @@ export const getQuoteTool: Tool<Input> = {
     '`price` is null when there has been no trade yet; check `status` and the best bid/ask instead.',
     'Inputs that cannot be resolved are listed in `unresolved` with suggestions rather than failing the whole call.',
     'Outside trading hours (09:00-13:30 Asia/Taipei, weekdays) the last session\'s values are returned with status "previous_session".',
+    'ETF quotes (TWSE and TPEx) also carry `nav`: the issuer\'s estimated NAV (預估淨值), premium_percent of `price` against it (positive = premium, negative = discount) and the previous business day\'s NAV.',
+    'The estimate comes from the TWSE MIS ETF disclosure feed, which issuers update during the session on their own schedule (the exchange\'s page refreshes every 15 seconds) and leave at their last value after the close, so check nav.date and nav.time.',
+    'For ETFs whose underlying trades outside Taiwan hours (underlying_zone not "domestic"), the estimate may not move during the Taiwan session.',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -100,6 +176,7 @@ export const getQuoteTool: Tool<Input> = {
               type: 'string',
               enum: ['traded_today', 'previous_session', 'no_trade', 'unknown_date'],
             },
+            nav: navSchema,
           },
           required: ['code', 'name', 'market', 'price', 'status'],
         },
@@ -177,10 +254,11 @@ export const getQuoteTool: Tool<Input> = {
       else unresolved.push({ input, reason: 'no_quote', suggestions: await suggest(input, market) })
     }
 
+    const warnings = [...result.warnings]
     return {
-      quotes: result.quotes,
+      quotes: await withNav(result.quotes, warnings, signal),
       unresolved,
-      warnings: result.warnings,
+      warnings,
       retrieved_at: new Date().toISOString(),
     }
   },

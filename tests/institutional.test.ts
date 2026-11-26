@@ -254,6 +254,16 @@ describe('get_institutional_trading over several days', () => {
     expect(result).toMatchObject({ start_date: '2026-11-13', end_date: '2026-11-13', trading_days: 1 })
     expect((result.stocks as object[])[0]).not.toHaveProperty('daily')
   })
+
+  it('reports progress once per trading day loaded, with the total when days is fixed', async () => {
+    routes()
+    const progress = vi.fn()
+    await getInstitutionalTool.run({ symbols: ['2330'], days: 2 }, { ...context, progress })
+    expect(progress.mock.calls).toEqual([
+      [1, 2, 'Loaded 1 trading day'],
+      [2, 2, 'Loaded 2 trading days'],
+    ])
+  })
 })
 
 describe('get_institutional_trading with start', () => {

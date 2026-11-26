@@ -1,3 +1,4 @@
+import { cacheIfPastDay } from './disk-cache.js'
 import { requestJson } from './http.js'
 import { type Market, strictNumber } from './market.js'
 import { DailyCache } from './trading-day.js'
@@ -221,6 +222,134 @@ export function resetMarginCache(): void {
 export function loadMargin(date: string, market: Market, signal?: AbortSignal) {
   const url = marginUrl(date, market)
   return cache.get(url, date, async () =>
-    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 }), market, date)
+    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market, date)
+  )
+}
+
+/**
+ * 借券賣出 (securities borrowing and lending sales), from the exchanges' 信用額度總量管制餘額表,
+ * which lists it next to 融券. Verified against live responses (2026-11-25, for 2026-11-22 and
+ * 2026-11-24): on both exchanges every row satisfies balance = previous + sell - returned + adjustment,
+ * and its 融券 columns match MI_MARGN / margin_bal_result exactly.
+ *
+ * - TWSE rwd/zh/marginTrading/TWT93U: top-level `fields` / `data`, ending with a blank-coded 合計 row.
+ * - TPEx web/stock/margin_trading/margin_sbl/margin_sbl_result.php: `tables[0]`, no totals row, so
+ *   the market total is the sum of the rows.
+ *
+ * Both report shares (not lots). A few securities that are not eligible for margin trading (remark Y)
+ * appear here but not in the margin tables. Both exchanges update it twice in the evening, around
+ * 20:30 and 22:30 Taipei.
+ */
+
+/** 借券賣出 for one day or a period, in shares. */
+export type SblFlow = {
+  /** 當日賣出: new SBL short sales. */
+  sell: number
+  /** 當日還券: borrowed shares returned. */
+  returned: number
+  /** 當日調整: transfers between normal, credit and SBL positions, and error corrections. */
+  adjustment: number
+  previous_balance: number
+  balance: number
+}
+
+/** Remark symbols specific to SBL (both exchanges); the others repeat the margin remarks. */
+export const SBL_RESTRICTIONS = {
+  /** 不得借券交易且無借券餘額停止借券賣出 */
+  V: 'sbl_unavailable',
+  /** 借券賣出餘額已達總量控管標準或初次上市(櫃)無賣出額度暫停借券賣出 */
+  Z: 'sbl_quota_reached',
+} as const
+export type SblRestriction = (typeof SBL_RESTRICTIONS)[keyof typeof SBL_RESTRICTIONS]
+
+export type SblRow = {
+  code: string
+  name: string
+  market: Market
+  /** `limit` is 次一營業日可借券賣出限額, the next trading day's cap on intraday SBL sell orders, shares. */
+  sbl: SblFlow & { limit: number }
+  restrictions: SblRestriction[]
+}
+
+export type SblDay = { rows: SblRow[]; summary: SblFlow | null }
+
+/** Both exchanges: 代號, 名稱, 融券 2-7, 借券賣出 前日餘額 8 / 當日賣出 9 / 當日還券 10 / 當日調整 11 / 當日餘額 12 / 限額 13, 備註 14. */
+const SBL_COLUMNS = { previous_balance: 8, sell: 9, returned: 10, adjustment: 11, balance: 12, limit: 13, note: 14 } as const
+const SBL_TOTAL_LABEL = '合計'
+
+export function sblUrl(date: string, market: Market): string {
+  const [year, month, day] = date.split('-')
+  if (market === 'otc') {
+    const query = new URLSearchParams({ l: 'zh-tw', o: 'json', d: `${Number(year) - 1911}/${month}/${day}` })
+    return `https://www.tpex.org.tw/web/stock/margin_trading/margin_sbl/margin_sbl_result.php?${query}`
+  }
+  const query = new URLSearchParams({ date: `${year}${month}${day}`, response: 'json' })
+  return `https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U?${query}`
+}
+
+function sblFlow(row: unknown[]): SblFlow {
+  return {
+    sell: number(row, SBL_COLUMNS.sell),
+    returned: number(row, SBL_COLUMNS.returned),
+    adjustment: number(row, SBL_COLUMNS.adjustment),
+    previous_balance: number(row, SBL_COLUMNS.previous_balance),
+    balance: number(row, SBL_COLUMNS.balance),
+  }
+}
+
+function sumSbl(flows: SblFlow[]): SblFlow {
+  const total = (key: keyof SblFlow) => flows.reduce((sum, flow) => sum + flow[key], 0)
+  return {
+    sell: total('sell'),
+    returned: total('returned'),
+    adjustment: total('adjustment'),
+    previous_balance: total('previous_balance'),
+    balance: total('balance'),
+  }
+}
+
+/**
+ * The day's 借券賣出 rows and market total, or null when the exchange has nothing for that date.
+ * `date` (YYYY-MM-DD) is the day asked for: an answer for any other day is refused.
+ */
+export function parseSbl(data: unknown, market: Market, date?: string): SblDay | null {
+  if (!data || typeof data !== 'object') throw new Error('Invalid securities lending response')
+  const response = data as Response & { data?: unknown }
+  if (typeof response.stat === 'string' && response.stat.toLowerCase() !== 'ok') {
+    if (NO_DATA.some((text) => (response.stat as string).includes(text))) return null
+    throw new Error(`Securities lending data unavailable: ${response.stat}`)
+  }
+  const tables = (Array.isArray(response.tables) ? response.tables : []) as Table[]
+  const rows = market === 'tse' ? response.data : tables[0]?.data
+  if (!Array.isArray(rows)) throw new Error('Invalid securities lending rows')
+  if (!rows.length) return null
+  const answered = response.date
+  if (date && typeof answered === 'string' && answered !== date.replaceAll('-', '')) {
+    throw new Error(`${market === 'tse' ? 'TWSE' : 'TPEx'} answered with securities lending data for ${answered} instead of ${date}`)
+  }
+  const parsed: SblRow[] = rows.flatMap((row) => {
+    if (!Array.isArray(row) || row.length <= SBL_COLUMNS.note) return []
+    const code = String(row[0]).trim().toUpperCase()
+    if (!/^[A-Z0-9]+$/.test(code)) return []
+    const note = String(row[SBL_COLUMNS.note] ?? '')
+    return [
+      {
+        code,
+        name: String(row[1]).trim(),
+        market,
+        sbl: { ...sblFlow(row), limit: number(row, SBL_COLUMNS.limit) },
+        restrictions: Object.entries(SBL_RESTRICTIONS).flatMap(([symbol, restriction]) => (note.includes(symbol) ? [restriction] : [])),
+      },
+    ]
+  })
+  const total = market === 'tse' ? rowByLabel(rows, SBL_TOTAL_LABEL, 1) : undefined
+  const summary = total ? sblFlow(total) : market === 'otc' ? sumSbl(parsed.map((row) => row.sbl)) : null
+  return { rows: parsed, summary }
+}
+
+export function loadSbl(date: string, market: Market, signal?: AbortSignal) {
+  const url = sblUrl(date, market)
+  return cache.get(url, date, async () =>
+    parseSbl(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market, date)
   )
 }

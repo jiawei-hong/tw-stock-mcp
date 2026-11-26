@@ -33,7 +33,7 @@ export function serveStdio(
       return
     }
     const task = server
-      .handle(message)
+      .handle(message, { notify: send })
       .then((response) => {
         if (response !== undefined) send(response)
       })

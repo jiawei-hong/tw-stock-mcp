@@ -31,6 +31,7 @@ export const getMarketIndexTool: Tool<Input> = {
     'Near-realtime values of Taiwan\'s headline indices: TAIEX (發行量加權股價指數, TWSE), TPEX (櫃買指數) and FRMSA (寶島股價指數).',
     'Returns value, previous close, change, change percent and the day\'s open/high/low. Set `intraday` for a sampled minute-by-minute series of TAIEX and TPEX for the current or last session.',
     'Outside trading hours (09:00-13:30 Taipei) it returns the last session with status "previous_session".',
+    'For daily TAIEX or TPEX history over a date range, use get_index_history.',
   ].join(' '),
   inputSchema: {
     type: 'object',

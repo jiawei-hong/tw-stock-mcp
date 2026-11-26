@@ -4,18 +4,25 @@ import {
   type CreditFlow,
   type CreditSummary,
   loadMargin,
+  loadSbl,
   type MarginRow,
   RESTRICTIONS,
   type Restriction,
+  SBL_RESTRICTIONS,
+  type SblFlow,
+  type SblRestriction,
+  type SblRow,
 } from '../core/margin.js'
-import { isIsoDate, type Market, normaliseCode } from '../core/market.js'
+import { isIsoDate, type Market, normaliseCode, taipeiToday } from '../core/market.js'
 import { listedElsewhere, resolveSecurity } from '../core/resolve.js'
 import { classifySecurity, DEFAULT_SECURITY_TYPES } from '../core/securities.js'
 import { findTradingDay, noTradingDataMessage, previousTradingDays } from '../core/trading-day.js'
 import { type Tool, ToolError } from '../mcp/server.js'
 import { describeOtherMarket, describeUnresolved } from './shared.js'
 
-type RankBy = 'margin' | 'short'
+type RankBy = 'margin' | 'short' | 'sbl'
+const INCLUDES = ['sbl'] as const
+type Include = (typeof INCLUDES)[number]
 type Input = {
   symbols?: string[]
   date?: string
@@ -24,6 +31,7 @@ type Input = {
   market?: Market
   rank_by?: RankBy
   limit?: number
+  include?: Include[]
 }
 
 /** About one calendar month of trading days. */
@@ -47,7 +55,13 @@ type DailyMargin = {
   short_change: number
   offset: number
   short_margin_ratio_percent: number | null
+  sbl_sell?: number | null
+  sbl_returned?: number | null
+  sbl_balance?: number | null
+  sbl_change?: number | null
 }
+type SblChange = SblFlow & { change: number }
+type SblSide = SblChange & { limit: number; restrictions: SblRestriction[] }
 type StockMargin = {
   code: string
   name: string
@@ -57,9 +71,19 @@ type StockMargin = {
   offset: number
   short_margin_ratio_percent: number | null
   restrictions: Restriction[]
+  sbl?: SblSide | null
+  total_short_balance?: number | null
   daily?: DailyMargin[]
 }
-type LoadedDay = { date: string; rows: MarginRow[]; summaries: Map<Market, CreditSummary | null> }
+type LoadedDay = {
+  date: string
+  rows: MarginRow[]
+  summaries: Map<Market, CreditSummary | null>
+  /** Only with include "sbl": rows keyed by sblKey, and each market's total. */
+  sbl?: { rows: Map<string, SblRow>; summaries: Map<Market, SblFlow | null> }
+}
+
+const sblKey = (market: Market, code: string) => `${market}:${code}`
 
 const flowProperties = (unit: string) => ({
   previous_balance: { type: 'number', description: `Balance before the period, ${unit}; the exchange's final figure` },
@@ -84,6 +108,30 @@ const sideSchema = (what: string, buy: string, sell: string, redemption: string)
 const marginSide = sideSchema('融資 (margin purchase)', '融資買進: new margin buys', '融資賣出: margin positions sold', '現金償還: margin repaid in cash')
 const shortSide = sideSchema('融券 (short sale)', '融券買進: shorts covered', '融券賣出: new short sales', '現券償還: shorts repaid with shares')
 
+const sblFlowProperties = {
+  sell: { type: 'number', description: '當日賣出: new short sales of borrowed shares' },
+  returned: { type: 'number', description: '當日還券: borrowed shares returned' },
+  adjustment: { type: 'number', description: '當日調整: transfers between normal, credit and SBL positions and error corrections; balance = previous_balance + sell - returned + adjustment' },
+  ...flowProperties('shares'),
+} as const
+
+const sblSchema = {
+  type: ['object', 'null'],
+  description: 'Only with include "sbl": 借券賣出 (short sales of borrowed shares, SBL), in shares. Null when the exchange has no 借券賣出 data for this stock on every day of the period.',
+  properties: {
+    ...sblFlowProperties,
+    limit: {
+      type: 'number',
+      description: '次一營業日可借券賣出限額: next trading day\'s cap on intraday SBL sell orders, shares. Hedging sales by brokers are exempt, so sell can exceed it.',
+    },
+    restrictions: {
+      type: 'array',
+      description: 'From the exchange remark for the next trading day: V 不得借券交易且無借券餘額停止借券賣出 (sbl_unavailable), Z 借券賣出餘額已達總量控管標準 or no quota yet (sbl_quota_reached)',
+      items: { type: 'string', enum: Object.values(SBL_RESTRICTIONS) },
+    },
+  },
+} as const
+
 const rowSchema = {
   type: 'object',
   properties: {
@@ -99,9 +147,14 @@ const rowSchema = {
       description: 'From the exchange remark for the next trading day: O 停止融資, X 停止融券, @ 融資分配, % 融券分配, ! 停止買賣',
       items: { type: 'string', enum: Object.values(RESTRICTIONS) },
     },
+    sbl: sblSchema,
+    total_short_balance: {
+      type: ['number', 'null'],
+      description: 'Only with include "sbl": short.balance + sbl.balance (融券 + 借券賣出), the complete short interest in shares; null when sbl is null',
+    },
     daily: {
       type: 'array',
-      description: 'Only when the period has more than one trading day: per-day buys, sells, balances and changes in shares, oldest first. Balances are the restated figures from the next day\'s report, except on the last day.',
+      description: 'Only when the period has more than one trading day: per-day buys, sells, balances and changes in shares, oldest first, plus sbl_sell, sbl_returned, sbl_balance and sbl_change with include "sbl". Balances are the restated figures from the next day\'s report, except on the last day.',
       items: { type: 'object' },
     },
   },
@@ -126,6 +179,12 @@ const summarySchema = {
     short: { ...flowSchema('shares'), description: '融券, shares' },
     margin_amount: { ...flowSchema('TWD'), description: '融資金額: margin loans drawn (buy), repaid (sell, redemption) and outstanding (balance), TWD' },
     short_margin_ratio_percent: { type: ['number', 'null'], description: '券資比 for the whole market' },
+    sbl: {
+      type: ['object', 'null'],
+      description: 'Only with include "sbl": 借券賣出 market totals, shares; null when not available for every day',
+      properties: sblFlowProperties,
+    },
+    total_short_balance: { type: ['number', 'null'], description: 'Only with include "sbl": short.balance + sbl.balance, shares' },
   },
 } as const
 
@@ -153,10 +212,33 @@ function side(flows: (CreditFlow & { limit: number })[]): Side {
   return { ...combined, limit, utilization_percent: percent(combined.balance, limit) }
 }
 
-/** One stock on one day; `index` is the day's position in the period, oldest first. */
-type StockDay = { date: string; index: number; row: MarginRow }
+/** 借券賣出 flows summed over the days (oldest first); balances from the first and last day. */
+function combineSbl(flows: SblFlow[]): SblChange {
+  const total = (key: 'sell' | 'returned' | 'adjustment') => flows.reduce((sum, flow) => sum + flow[key], 0)
+  const previous_balance = flows[0].previous_balance
+  const balance = flows.at(-1)!.balance
+  return {
+    sell: total('sell'),
+    returned: total('returned'),
+    adjustment: total('adjustment'),
+    previous_balance,
+    balance,
+    change: balance - previous_balance,
+  }
+}
 
-function stockMargin(days: StockDay[], withDaily: boolean): StockMargin {
+/** One stock on one day; `index` is the day's position in the period, oldest first. */
+type StockDay = { date: string; index: number; row: MarginRow; sbl?: SblRow }
+
+/** The stock's 借券賣出 over its days, or null unless every day has a row. */
+function lending(days: StockDay[]): SblSide | null {
+  const rows = days.flatMap(({ sbl }) => (sbl ? [sbl] : []))
+  if (!rows.length || rows.length < days.length) return null
+  const latest = rows.at(-1)!
+  return { ...combineSbl(rows.map((row) => row.sbl)), limit: latest.sbl.limit, restrictions: latest.restrictions }
+}
+
+function stockMargin(days: StockDay[], withDaily: boolean, withSbl = false): StockMargin {
   const latest = days.at(-1)!.row
   const margin = side(days.map(({ row }) => row.margin))
   const short = side(days.map(({ row }) => row.short))
@@ -170,14 +252,19 @@ function stockMargin(days: StockDay[], withDaily: boolean): StockMargin {
     short_margin_ratio_percent: percent(short.balance, margin.balance),
     restrictions: latest.restrictions,
   }
+  if (withSbl) {
+    entry.sbl = lending(days)
+    entry.total_short_balance = entry.sbl ? short.balance + entry.sbl.balance : null
+  }
   if (withDaily) {
-    entry.daily = days.map(({ date, index, row }, position) => {
+    entry.daily = days.map(({ date, index, row, sbl }, position) => {
       // A day's own balance is provisional; the next trading day restates it as previous_balance.
       const next = days[position + 1]
-      const restated = next?.index === index + 1 ? next.row : null
+      const consecutive = next?.index === index + 1
+      const restated = consecutive ? next.row : null
       const margin = restated?.margin.previous_balance ?? row.margin.balance
       const short = restated?.short.previous_balance ?? row.short.balance
-      return {
+      const day: DailyMargin = {
         date,
         margin_buy: row.margin.buy,
         margin_sell: row.margin.sell,
@@ -190,6 +277,15 @@ function stockMargin(days: StockDay[], withDaily: boolean): StockMargin {
         offset: row.offset,
         short_margin_ratio_percent: percent(short, margin),
       }
+      if (withSbl) {
+        const restatedSbl = consecutive ? next.sbl : undefined
+        const lent = sbl ? restatedSbl?.sbl.previous_balance ?? sbl.sbl.balance : null
+        day.sbl_sell = sbl?.sbl.sell ?? null
+        day.sbl_returned = sbl?.sbl.returned ?? null
+        day.sbl_balance = lent
+        day.sbl_change = sbl && lent !== null ? lent - sbl.sbl.previous_balance : null
+      }
+      return day
     })
   }
   return entry
@@ -202,22 +298,35 @@ function byCode(days: LoadedDay[], only?: Set<string>): Map<string, StockDay[]> 
     for (const row of day.rows) {
       if (only && !only.has(row.code)) continue
       const entry = result.get(row.code) ?? []
-      entry.push({ date: day.date, index, row })
+      entry.push({ date: day.date, index, row, sbl: day.sbl?.rows.get(sblKey(row.market, row.code)) })
       result.set(row.code, entry)
     }
   }
   return result
 }
 
-function marketSummary(summaries: CreditSummary[]) {
+/** `lent` only with include "sbl": the market's 借券賣出 total per day, oldest first, null where missing. */
+function marketSummary(summaries: CreditSummary[], lent?: (SblFlow | null)[]) {
   const margin = combine(summaries.map((summary) => summary.margin))
   const short = combine(summaries.map((summary) => summary.short))
-  return {
+  const summary: {
+    margin: Change
+    short: Change
+    margin_amount: Change
+    short_margin_ratio_percent: number | null
+    sbl?: SblChange | null
+    total_short_balance?: number | null
+  } = {
     margin,
     short,
     margin_amount: combine(summaries.map((summary) => summary.margin_amount)),
     short_margin_ratio_percent: percent(short.balance, margin.balance),
   }
+  if (lent) {
+    summary.sbl = lent.length && lent.every(Boolean) ? combineSbl(lent as SblFlow[]) : null
+    summary.total_short_balance = summary.sbl ? short.balance + summary.sbl.balance : null
+  }
+  return summary
 }
 
 const EXCHANGE: Record<Market, string> = { tse: 'TWSE', otc: 'TPEx' }
@@ -231,6 +340,7 @@ export const getMarginTradingTool: Tool<Input> = {
     'With `symbols`: per-stock figures. Without `symbols`: market-wide totals per exchange, including 融資金額 (margin loan amount, TWD), plus the stocks and ETFs with the largest balance increases and decreases ranked by `rank_by`.',
     'Share counts are in shares (the exchanges\' lots x 1000) and amounts in TWD. The latest day\'s balance is provisional: the exchanges finalise it as the next day\'s previous_balance.',
     'Rankings are by shares, so low-priced stocks rank higher than their TWD value suggests.',
+    'Optional `include: ["sbl"]` adds 借券賣出 (short sales of borrowed shares, SBL) next to 融券 for each stock and market: sold, returned, adjustment, balance and the next day\'s SBL sell limit, plus total_short_balance (融券 + 借券賣出) so short interest is complete. rank_by "sbl" ranks by the 借券賣出 balance change and implies the include. It costs one more request per exchange per day.',
     `Without \`date\`, the period ends on the most recent trading day with published data; the exchanges publish in the evening, around ${PUBLISHED_AROUND} Taipei, later than prices and institutional trading.`,
   ].join(' '),
   inputSchema: {
@@ -263,10 +373,16 @@ export const getMarginTradingTool: Tool<Input> = {
       market: { type: 'string', enum: ['tse', 'otc'], description: 'Restrict totals, rankings or symbol lookup to one market.' },
       rank_by: {
         type: 'string',
-        enum: ['margin', 'short'],
-        description: 'Balance whose change ranks stocks when symbols are omitted: "margin" (融資餘額, default) or "short" (融券餘額).',
+        enum: ['margin', 'short', 'sbl'],
+        description: 'Balance whose change ranks stocks when symbols are omitted: "margin" (融資餘額, default), "short" (融券餘額) or "sbl" (借券賣出餘額, implies include "sbl").',
       },
       limit: { type: 'integer', minimum: 1, maximum: 50, default: 10, description: 'Rows per ranking. Default 10.' },
+      include: {
+        type: 'array',
+        maxItems: INCLUDES.length,
+        items: { type: 'string', enum: INCLUDES },
+        description: 'Extra data to add: ["sbl"] for 借券賣出 (securities lending short sales) next to 融券. Omit for the default response.',
+      },
     },
     additionalProperties: false,
   },
@@ -285,7 +401,7 @@ export const getMarginTradingTool: Tool<Input> = {
         description: 'Market-wide totals over the period per requested market; null for a market without totals for every day',
         properties: { tse: summarySchema, otc: summarySchema },
       },
-      rank_by: { type: 'string', enum: ['margin', 'short'] },
+      rank_by: { type: 'string', enum: ['margin', 'short', 'sbl'] },
       top_increases: { type: 'array', items: rowSchema, description: 'Largest rank_by balance increases over the period' },
       top_decreases: { type: 'array', items: rowSchema, description: 'Largest rank_by balance decreases over the period' },
       notes: { type: 'array', items: { type: 'string' } },
@@ -294,7 +410,8 @@ export const getMarginTradingTool: Tool<Input> = {
   },
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
-  async run({ symbols, date: requested, start, days: requestedDays, market, rank_by = 'margin', limit = 10 }, { signal }) {
+  async run({ symbols, date: requested, start, days: requestedDays, market, rank_by = 'margin', limit = 10, include = [] }, { signal }) {
+    const withSbl = include.includes('sbl') || rank_by === 'sbl'
     if (start !== undefined) {
       if (requestedDays !== undefined) throw new ToolError('Pass either start or days, not both.')
       if (!isIsoDate(start)) throw new ToolError(`start must be a real date in YYYY-MM-DD form, got "${start}"`)
@@ -331,16 +448,24 @@ export const getMarginTradingTool: Tool<Input> = {
     const markets: Market[] = market ? [market] : ['tse', 'otc']
     const loaded: LoadedDay[] = []
     const unpublished: string[] = []
+    const unlent: string[] = []
     for (const day of tseDays) {
       const rows: MarginRow[] = []
       const summaries = new Map<Market, CreditSummary | null>()
+      const sbl = withSbl ? { rows: new Map<string, SblRow>(), summaries: new Map<Market, SblFlow | null>() } : undefined
       for (const entry of markets) {
         const data = entry === 'tse' ? day.data : await loadMargin(day.date, entry, signal)
         if (!data) unpublished.push(day.date)
         rows.push(...(data?.rows ?? []))
         summaries.set(entry, data?.summary ?? null)
+        if (sbl) {
+          const lent = await loadSbl(day.date, entry, signal)
+          if (!lent) unlent.push(`${EXCHANGE[entry]} ${day.date}`)
+          for (const row of lent?.rows ?? []) sbl.rows.set(sblKey(entry, row.code), row)
+          sbl.summaries.set(entry, lent?.summary ?? null)
+        }
       }
-      loaded.push({ date: day.date, rows, summaries })
+      loaded.push({ date: day.date, rows, summaries, ...(sbl ? { sbl } : {}) })
     }
 
     const endDate = loaded[0].date
@@ -352,7 +477,12 @@ export const getMarginTradingTool: Tool<Input> = {
       notes.push(`Buys, sells, redemptions and offsets are totals over ${loaded.length} trading days (${startDate} to ${endDate}); previous_balance is from ${startDate}, balance and limit from ${endDate}.`)
     }
     if (unpublished.length) notes.push(`TPEx margin data was not available for ${unpublished.join(', ')}; TPEx figures leave those days out.`)
-    const period = { date: endDate, start_date: startDate, end_date: endDate, trading_days: loaded.length, unit: 'shares' }
+    if (withSbl) {
+      if (loaded.length > 1) notes.push(`借券賣出 sell, returned and adjustment are totals over the period too; its previous_balance is from ${startDate}, balance and limit from ${endDate}.`)
+      if (unlent.length) notes.push(`借券賣出 data was not available for ${unlent.join(', ')}; sbl is null for stocks and market totals missing a day.`)
+      if (endDate === taipeiToday()) notes.push(`借券賣出 for ${endDate} is updated twice in the evening (around 20:30 and 22:30 Taipei) and may still change.`)
+    }
+    const period ={ date: endDate, start_date: startDate, end_date: endDate, trading_days: loaded.length, unit: 'shares' }
 
     if (symbols) {
       const codes: string[] = []
@@ -379,7 +509,7 @@ export const getMarginTradingTool: Tool<Input> = {
       for (const code of codes) {
         const days = rowsByCode.get(code)
         if (days) {
-          stocks.push(stockMargin(days, loaded.length > 1))
+          stocks.push(stockMargin(days, loaded.length > 1, withSbl))
           continue
         }
         const input = inputByCode.get(code) ?? code
@@ -398,20 +528,28 @@ export const getMarginTradingTool: Tool<Input> = {
     for (const entry of markets) {
       const summaries = loaded.map((day) => day.summaries.get(entry)).reverse()
       const complete = summaries.every(Boolean)
-      market_summary[entry] = complete ? marketSummary(summaries as CreditSummary[]) : null
+      const lent = withSbl ? loaded.map((day) => day.sbl?.summaries.get(entry) ?? null).reverse() : undefined
+      market_summary[entry] = complete ? marketSummary(summaries as CreditSummary[], lent) : null
       if (!complete) notes.push(`${EXCHANGE[entry]} market totals are not available for every day in the period.`)
     }
     const eligible = [...byCode(loaded).values()]
       .filter((days) => DEFAULT_SECURITY_TYPES.includes(classifySecurity(days[0].row.code)))
-      .map((days) => stockMargin(days, false))
-    const sorted = eligible.sort((left, right) => right[rank_by].change - left[rank_by].change)
+      .map((days) => stockMargin(days, false, withSbl))
+    // Stocks without 借券賣出 for every day are left out of an "sbl" ranking.
+    const changeOf = (row: StockMargin) => (rank_by === 'sbl' ? row.sbl?.change ?? null : row[rank_by].change)
+    const sorted = eligible
+      .flatMap((row) => {
+        const change = changeOf(row)
+        return change === null ? [] : [{ row, change }]
+      })
+      .sort((left, right) => right.change - left.change)
 
     return {
       ...period,
       market_summary,
       rank_by,
-      top_increases: sorted.filter((row) => row[rank_by].change > 0).slice(0, limit),
-      top_decreases: sorted.reverse().filter((row) => row[rank_by].change < 0).slice(0, limit),
+      top_increases: sorted.filter(({ change }) => change > 0).slice(0, limit).map(({ row }) => row),
+      top_decreases: sorted.reverse().filter(({ change }) => change < 0).slice(0, limit).map(({ row }) => row),
       notes,
     }
   },
