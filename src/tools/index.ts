@@ -1,3 +1,4 @@
+import { compareStocksTool } from './compare-stocks.js'
 import { getFundamentalsTool } from './get-fundamentals.js'
 import { getHistoryTool } from './get-history.js'
 import { getInstitutionalTool } from './get-institutional.js'
@@ -16,6 +17,7 @@ import { searchSecurityTool } from './search-security.js'
 export const tools = [
   searchSecurityTool,
   getStockOverviewTool,
+  compareStocksTool,
   getQuoteTool,
   getHistoryTool,
   getFundamentalsTool,
