@@ -237,6 +237,11 @@ export class McpServer {
     }
   }
 
+  /** Aborts every request in flight, e.g. when the transport session ends. */
+  cancelAll(reason: string): void {
+    for (const controller of this.inFlight.values()) controller.abort(new Error(reason))
+  }
+
   private handleNotification(
     method: string,
     params: Record<string, unknown>
