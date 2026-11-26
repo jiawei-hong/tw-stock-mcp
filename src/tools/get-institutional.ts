@@ -182,7 +182,8 @@ async function extendDays(
   days: Day[],
   want: (days: readonly Day[]) => readonly Market[],
   signal: AbortSignal,
-  notBefore?: string
+  notBefore?: string,
+  onDay?: () => void
 ): Promise<void> {
   for (let markets = want(days); markets.length; markets = want(days)) {
     const oldest = { date: days.at(-1)!.date, data: [] as InstitutionalRow[] }
@@ -197,6 +198,7 @@ async function extendDays(
     )
     if (!earlier) return
     days.push(await loadDay(earlier.date, earlier.data, markets, signal))
+    onDay?.()
   }
 }
 
@@ -220,7 +222,7 @@ function hasOpenStreak(days: readonly Day[], code: string): boolean {
  * further back only while some streak is still unbroken, up to STREAK_DAYS trading days, loading only the markets
  * of the stocks whose streaks are still open. The full-market tables serve every stock at once.
  */
-async function addStreaks(stocks: Aggregate[], period: readonly Day[], signal: AbortSignal) {
+async function addStreaks(stocks: Aggregate[], period: readonly Day[], signal: AbortSignal, onDay?: () => void) {
   const days = period.slice(0, STREAK_DAYS)
   await extendDays(
     days,
@@ -228,7 +230,9 @@ async function addStreaks(stocks: Aggregate[], period: readonly Day[], signal: A
       loaded.length >= STREAK_DAYS
         ? []
         : [...new Set(stocks.filter((stock) => hasOpenStreak(loaded, stock.code)).map((stock) => stock.market))],
-    signal
+    signal,
+    undefined,
+    onDay
   )
   for (const stock of stocks) {
     stock.streaks = Object.fromEntries(
@@ -328,7 +332,7 @@ export const getInstitutionalTool: Tool<Input> = {
   },
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
-  async run({ symbols, date: requested, start, days: requestedDays, market, rank_by = 'total', limit = 10, streak = false }, { signal }) {
+  async run({ symbols, date: requested, start, days: requestedDays, market, rank_by = 'total', limit = 10, streak = false }, { signal, progress }) {
     if (streak && !symbols) {
       throw new ToolError('streak works per stock: pass symbols (e.g. ["2330"]) with streak: true, or omit streak for the market summary and rankings.')
     }
@@ -354,9 +358,15 @@ export const getInstitutionalTool: Tool<Input> = {
       throw new ToolError(`start (${start}) is after the last trading day with data (${found.date}).`)
     }
     const markets: Market[] = market ? [market] : ['tse', 'otc']
+    // Progress counts trading days loaded. The total is known only for a fixed `days` without streaks:
+    // `start` walks until it is reached, and a streak stops as soon as every streak has ended.
+    const total = start === undefined && !streak ? days : undefined
+    let loadedDays = 0
+    const onDay = () => progress?.(++loadedDays, total, `Loaded ${loadedDays} trading day${loadedDays === 1 ? '' : 's'}`)
     const loaded = [await loadDay(found.date, found.data, markets, signal)]
+    onDay()
     // With start, the day past MAX_DAYS only shows the period is too long, so TWSE alone is enough.
-    await extendDays(loaded, (period) => (period.length >= days ? [] : period.length === MAX_DAYS ? ['tse'] : markets), signal, start)
+    await extendDays(loaded, (period) => (period.length >= days ? [] : period.length === MAX_DAYS ? ['tse'] : markets), signal, start, onDay)
     if (start !== undefined && loaded.length > MAX_DAYS) {
       throw new ToolError(`${start} to ${found.date} spans more than ${MAX_DAYS} trading days; use a later start or split the period.`)
     }
@@ -407,7 +417,7 @@ export const getInstitutionalTool: Tool<Input> = {
         })
       }
       if (!streak || !stocks.length) return { ...period, stocks, unresolved, notes }
-      const streakWindow = await addStreaks(stocks, loaded, signal)
+      const streakWindow = await addStreaks(stocks, loaded, signal, onDay)
       notes.push(
         `Streaks count consecutive trading days of net buying (or selling) ending ${streakWindow.end_date}, examined back to ${streakWindow.start_date} (${streakWindow.trading_days} of at most ${STREAK_DAYS} trading days). Weekends and holidays are skipped; a day with zero net ends a streak; at_least marks a streak that reached the ${STREAK_DAYS}-day lookback.`
       )
