@@ -72,6 +72,26 @@ describe('createProgressReporter', () => {
     ])
   })
 
+  it('sends a held update on close only when asked, and nothing afterwards', () => {
+    const sent: JsonRpcNotification[] = []
+    const completed = createProgressReporter('done', (n) => sent.push(n))
+    completed.report(1)
+    completed.report(2)
+    completed.close(true)
+    completed.report(3)
+    vi.advanceTimersByTime(500)
+
+    const cancelled = createProgressReporter('cancelled', (n) => sent.push(n))
+    cancelled.report(1)
+    cancelled.report(2)
+    cancelled.close()
+    vi.advanceTimersByTime(500)
+
+    expect(sent.map((n) => [n.params?.progressToken, n.params?.progress])).toEqual([
+      ['done', 1], ['done', 2], ['cancelled', 1],
+    ])
+  })
+
   it('keeps tool code running when the transport throws', () => {
     const reporter = createProgressReporter('t', () => {
       throw new Error('stream closed')
@@ -106,13 +126,22 @@ describe('progress notifications through McpServer', () => {
     await vi.advanceTimersByTimeAsync(100)
     expect(progressOf(sent)).toEqual([1, 3])
 
-    // An update inside the next window is still pending when the tool returns: dropped.
+    // An update inside the next window is still held when the tool returns: it is
+    // sent before the response, so the client sees the final count.
     await vi.advanceTimersByTimeAsync(50)
+    let sentBeforeResponse: unknown[] = []
     finish()
-    expect(await response).toMatchObject({ id: 1, result: { structuredContent: { done: true } } })
+    const answered = response.then((result) => {
+      sentBeforeResponse = progressOf(sent)
+      return result
+    })
+    expect(await answered).toMatchObject({ id: 1, result: { structuredContent: { done: true } } })
+    expect(sentBeforeResponse).toEqual([1, 3, 4])
+
+    // Nothing follows the response.
     await vi.advanceTimersByTimeAsync(500)
     report?.(5, 5)
-    expect(progressOf(sent)).toEqual([1, 3])
+    expect(progressOf(sent)).toEqual([1, 3, 4])
   })
 
   it('accepts integer progress tokens', async () => {

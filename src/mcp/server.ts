@@ -374,8 +374,9 @@ export class McpServer {
       }
       return this.errorResult(errorMessage(error))
     } finally {
-      // Before the response is returned, so no progress can follow it.
-      progress.close()
+      // Before the response is returned, so no progress can follow it. A completed
+      // request still sends its last held update, so clients see the final count.
+      progress.close(!controller.signal.aborted)
       this.inFlight.delete(id)
     }
   }

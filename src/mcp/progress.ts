@@ -16,8 +16,11 @@ export type Notify = (notification: JsonRpcNotification) => void
 
 export type ProgressReporter = {
   report(progress: number, total?: number, message?: string): void
-  /** Drops any pending update; nothing is sent afterwards. */
-  close(): void
+  /**
+   * Ends reporting; nothing is sent afterwards. A held update is sent first when
+   * `sendPending` is true (the request completed), and dropped otherwise.
+   */
+  close(sendPending?: boolean): void
 }
 
 /** At most one update per request in this window; the latest one is sent when it ends. */
@@ -75,10 +78,12 @@ export function createProgressReporter(
       if (wait <= 0) flush()
       else timer ??= setTimeout(flush, wait)
     },
-    close() {
+    close(sendPending = false) {
+      if (timer) clearTimeout(timer)
+      // flush() clears the timer and sends `pending` while still open.
+      if (sendPending) flush()
       closed = true
       pending = undefined
-      if (timer) clearTimeout(timer)
       timer = undefined
     },
   }
