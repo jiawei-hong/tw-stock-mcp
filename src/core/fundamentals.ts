@@ -252,9 +252,10 @@ export function parseIncome(row: Row | undefined): IncomeStatement | null {
   if (!row || !period) return null
   // Field names differ per accounting template (verified 2026-11-15):
   // ci 營業收入 / 營業利益（損失）; bd 收益 / 營業利益; mim 收入;
-  // basi (banks) net revenue = 利息淨收益 + 利息以外淨損益, no operating line.
+  // basi (banks) net revenue = 利息淨收益 + 利息以外淨損益, no operating line;
+  // fh (financial holdings) names the second 利息以外淨收益 (verified 2026-11-26).
   const interest = number(row, '利息淨收益')
-  const nonInterest = number(row, '利息以外淨損益')
+  const nonInterest = number(row, '利息以外淨損益', '利息以外淨收益')
   const bankRevenue = interest !== null || nonInterest !== null ? (interest ?? 0) + (nonInterest ?? 0) : null
   const revenue = twd(number(row, '營業收入', '收益', '收入') ?? bankRevenue)
   const gross = twd(number(row, '營業毛利（毛損）淨額', '營業毛利（毛損）'))

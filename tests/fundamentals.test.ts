@@ -159,6 +159,11 @@ describe('fundamentals parsing', () => {
     })
   })
 
+  it('reads financial holdings, which name non-interest income 利息以外淨收益', () => {
+    const { 利息以外淨損益: nonInterest, ...rest } = bankIncome
+    expect(parseIncome({ ...rest, 利息以外淨收益: nonInterest })).toMatchObject({ revenue: 39_363_945_000 })
+  })
+
   it('derives debt ratio, current ratio and year-to-date and annualised ROE / ROA', () => {
     expect(parseBalanceSheet(ciBalance, parseIncome(ciIncome))).toEqual({
       period: '2026 Q3', total_assets: 10_052_887_514_000, total_liabilities: 3_009_660_084_000, equity: 7_043_227_430_000,
