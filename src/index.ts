@@ -19,7 +19,7 @@ const { version } = JSON.parse(
 
 const INSTRUCTIONS = [
   'Taiwan stock market data from TWSE (上市, market "tse") and TPEx (上櫃, market "otc").',
-  'For a question about one stock, start with get_stock_overview. For the market as a whole, start with get_market_overview (end of day) or get_market_index (intraday).',
+  'For a question about one stock, start with get_stock_overview; to compare several stocks, use compare_stocks. For the market as a whole, start with get_market_overview (end of day) or get_market_index (intraday).',
   'Tools accept codes ("2330") or exact Traditional Chinese names ("台積電"); use search_security for partial names. The market is detected automatically.',
   'Prices and amounts are TWD; dates and times are Asia/Taipei. Each tool states its volume unit: get_quote uses lots (1 lot = 1,000 shares), the end-of-day tools use shares.',
   'End-of-day tools default to the latest trading day with published data and say which date they used.',
@@ -45,6 +45,9 @@ HTTP options:
 Environment:
   TW_STOCK_MCP_TOKEN       Bearer token that HTTP clients must send as
                            "Authorization: Bearer <token>". Optional on loopback.
+  TW_STOCK_MCP_CACHE_DIR   Keep past data that cannot change in this directory,
+                           across sessions. Off when unset.
+  TW_STOCK_MCP_CACHE_MAX_MB  Size cap for that directory (default 512).
 
 Add it to Claude Code:
   claude mcp add tw-stock -- npx -y npm:tw-stock-mcp@${version}
