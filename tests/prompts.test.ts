@@ -18,7 +18,9 @@ const stub = (name: string): Tool => ({
 })
 
 /** The real tools plus compare_stocks, which another slice adds. */
-const withCompare = [...tools, stub('compare_stocks')]
+// Independent of whether compare_stocks is registered in src/tools/index.ts.
+const withoutCompare = tools.filter((tool) => tool.name !== 'compare_stocks')
+const withCompare = [...withoutCompare, stub('compare_stocks')]
 
 const getPrompt = (server: McpServer, name: string, args?: unknown) =>
   server.handle(request(1, 'prompts/get', { name, ...(args === undefined ? {} : { arguments: args }) })) as Promise<{
@@ -115,7 +117,7 @@ describe('workflow prompts', () => {
   }
 
   it('offers only prompts whose tools are all registered', () => {
-    expect(promptsFor(tools).map((prompt) => prompt.name)).toEqual(['stock_brief', 'market_close_brief'])
+    expect(promptsFor(withoutCompare).map((prompt) => prompt.name)).toEqual(['stock_brief', 'market_close_brief'])
     expect(promptsFor(withCompare).map((prompt) => prompt.name)).toEqual([
       'stock_brief',
       'market_close_brief',
