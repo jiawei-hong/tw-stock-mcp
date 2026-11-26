@@ -197,6 +197,7 @@ export function resetDayTradingCache(): void {
   cache.clear()
 }
 
+// Not disk-cached: the exchanges may revise a day's figures until T+2, so a past day is not yet immutable.
 export function loadDayTrading(date: string, market: Market, signal?: AbortSignal): Promise<DayTradeDay | null> {
   const url = dayTradingUrl(date, market)
   return cache.get(url, date, async () =>

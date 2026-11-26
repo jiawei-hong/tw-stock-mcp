@@ -350,6 +350,6 @@ export function parseSbl(data: unknown, market: Market, date?: string): SblDay |
 export function loadSbl(date: string, market: Market, signal?: AbortSignal) {
   const url = sblUrl(date, market)
   return cache.get(url, date, async () =>
-    parseSbl(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 }), market, date)
+    parseSbl(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market, date)
   )
 }
