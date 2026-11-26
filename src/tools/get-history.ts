@@ -363,7 +363,9 @@ export const getHistoryTool: Tool<Input> = {
   },
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
-  async run(input, { signal }) {
+  async run(input, { signal, progress }) {
+    // One update per exchange page; the total is the number of pages this window needs.
+    const onStep = progress && ((done: number, total: number) => progress(done, total, `Loaded ${done} of ${total} exchange pages`))
     const request = plan(input)
     const resolution = await resolveSecurity(input.symbol, input.market)
     if (!resolution.ok) throw new ToolError(describeUnresolved(input.symbol, resolution))
@@ -382,7 +384,7 @@ export const getHistoryTool: Tool<Input> = {
           }
         }
       }
-      const history = await loadStatisticsHistory(resolution.code, market, interval, window, signal)
+      const history = await loadStatisticsHistory(resolution.code, market, interval, window, signal, onStep)
       const notes: string[] = []
       if (window.start !== requested.start || window.end !== requested.end) {
         notes.push(
@@ -415,7 +417,7 @@ export const getHistoryTool: Tool<Input> = {
     let bars: DailyBar[] = []
     for (const candidate of candidates) {
       market = candidate
-      bars = await loadSeriesWithReference(stockMonthly(resolution.code, candidate), span, signal)
+      bars = await loadSeriesWithReference(stockMonthly(resolution.code, candidate), span, signal, onStep)
       if (bars.length) break
     }
 

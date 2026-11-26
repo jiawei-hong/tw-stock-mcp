@@ -183,6 +183,20 @@ describe('get_history', () => {
     expect(bars[0].moving_averages.ma60).toBe((1000 + 22_231 + 22_231 + 15_195) / 60)
   })
 
+  it('reports progress once per exchange page of the window', async () => {
+    stubFetch({ 'openapi.tdcc.com.tw': () => tdccRecords, 'www.twse.com.tw': twseRoute })
+    const progress = vi.fn()
+    // September to November: three window pages. Warm-up months are loaded separately and not counted.
+    await getHistoryTool.run({ symbol: '2330', start: '2026-09-01', moving_averages: [5] }, { ...context, progress })
+
+    const calls = progress.mock.calls as [number, number, string][]
+    const total = calls[0][1]
+    expect(total).toBe(3)
+    expect(calls.map(([done]) => done)).toEqual(Array.from({ length: total }, (_, index) => index + 1))
+    expect(calls.every(([, each]) => each === total)).toBe(true)
+    expect(calls.at(-1)?.[2]).toBe(`Loaded ${total} of ${total} exchange pages`)
+  })
+
   it('uses TPEx for OTC listings', async () => {
     const { calls } = stubFetch({
       'openapi.tdcc.com.tw': () => tdccRecords,

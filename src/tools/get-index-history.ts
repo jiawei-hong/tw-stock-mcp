@@ -98,7 +98,9 @@ export const getIndexHistoryTool: Tool<Input> = {
   },
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
 
-  async run(input, { signal }) {
+  async run(input, { signal, progress }) {
+    // One update per exchange page; the total is the number of pages this window needs.
+    const onStep = progress && ((done: number, total: number) => progress(done, total, `Loaded ${done} of ${total} exchange pages`))
     const span = inputWindow(input)
     const days = spanDays(span.start, span.end)
     if (days > MAX_SPAN_DAYS) {
@@ -108,7 +110,7 @@ export const getIndexHistoryTool: Tool<Input> = {
     }
     const id = input.index ?? 'TAIEX'
     const source = indexMonthly(id)
-    const loaded = await loadSeriesWithReference(source, span, signal)
+    const loaded = await loadSeriesWithReference(source, span, signal, onStep)
     const result = await finishDaily(source, span, loaded, dailyOptions(input, input.interval ?? defaultDailyInterval(days)), signal)
     if (!result.summary) {
       result.notes.push(`No trading days between ${span.start} and ${span.end}; the window may have only holidays, or today's close is not published yet.`)

@@ -6,6 +6,7 @@ import {
   mergeBars,
   monthsBetween,
   monthStep,
+  type OnStep,
   PAST_MONTH_TTL_MS,
   previousMonth,
   runSequentially,
@@ -344,7 +345,8 @@ export async function loadStatisticsHistory(
   market: Market,
   interval: StatisticsInterval,
   window: StatisticsWindow,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onStep?: OnStep
 ): Promise<StatisticsHistory> {
   const today = taipeiToday()
   const currentMonth = today.slice(0, 7)
@@ -385,7 +387,7 @@ export async function loadStatisticsHistory(
   steps.push(...[...new Set(dailyMonths)].map(dailyStep))
 
   // The one multi-request loop for long windows.
-  const pages = await runSequentially(steps, signal)
+  const pages = await runSequentially(steps, signal, onStep)
   const stats = pages.flatMap((page) => ('stats' in page ? page.stats : []))
   const days = mergeBars(pages.flatMap((page) => ('daily' in page ? [page.daily] : [])))
 

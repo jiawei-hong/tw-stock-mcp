@@ -220,7 +220,7 @@ export type Step<T> = () => Promise<Loaded<T>>
  * long range is not a burst against the exchange. Every multi-request history
  * load goes through this loop.
  */
-export async function runSequentially<T>(steps: readonly Step<T>[], signal?: AbortSignal): Promise<T[]> {
+export async function runSequentially<T>(steps: readonly Step<T>[], signal?: AbortSignal, onStep?: OnStep): Promise<T[]> {
   const values: T[] = []
   let previousWasNetwork = false
   for (const step of steps) {
@@ -229,9 +229,13 @@ export async function runSequentially<T>(steps: readonly Step<T>[], signal?: Abo
     const result = await step()
     previousWasNetwork = !result.cached
     values.push(result.value)
+    onStep?.(values.length, steps.length)
   }
   return values
 }
+
+/** Called after each step of a multi-request load, with the steps done and the total. */
+export type OnStep = (done: number, total: number) => void
 
 /** A step that loads one month of daily bars from `source`. */
 export function monthStep(source: MonthlySource, month: string, signal?: AbortSignal): Step<DailyBar[]> {
@@ -249,9 +253,10 @@ export function mergeBars(pages: readonly (readonly DailyBar[])[]): DailyBar[] {
 export async function loadSeries(
   source: MonthlySource,
   months: readonly string[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onStep?: OnStep
 ): Promise<DailyBar[]> {
-  return mergeBars(await runSequentially(months.map((month) => monthStep(source, month, signal)), signal))
+  return mergeBars(await runSequentially(months.map((month) => monthStep(source, month, signal)), signal, onStep))
 }
 
 /** Loads daily bars for `months`, sequentially, sorted by date. */
@@ -278,9 +283,11 @@ export function previousMonth(month: string): string {
 export async function loadSeriesWithReference(
   source: MonthlySource,
   window: HistoryWindow,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onStep?: OnStep
 ): Promise<DailyBar[]> {
-  const bars = await loadSeries(source, window.months, signal)
+  // Progress covers the window's months; the occasional reference month is not counted.
+  const bars = await loadSeries(source, window.months, signal, onStep)
   if (!bars.length || bars.some((bar) => bar.date < window.start)) return bars
   const earlier = await loadSeries(source, [previousMonth(window.months[0])], signal)
   return [...earlier, ...bars]
