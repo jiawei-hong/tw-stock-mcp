@@ -154,3 +154,41 @@ export function loadSummary(date: string, signal?: AbortSignal) {
   const url = summaryUrl(date)
   return cache.get(url, date, async () => parseSummary(await requestJson<unknown>(url, { signal, cache: cacheIfPastDay(date) }), date))
 }
+
+/** A run of net buying or net selling that ends on the newest day. */
+export type Streak = {
+  /** null when the newest day's net is zero: no current streak. */
+  direction: 'buy' | 'sell' | null
+  /** Consecutive trading days in the run. */
+  days: number
+  /** The run covers every day looked at, so it may be longer than `days`. */
+  at_least: boolean
+  /** Net shares over the run. */
+  net: number
+  /** First day of the run, YYYY-MM-DD. */
+  start_date: string | null
+}
+
+/**
+ * The current streak in `daily` (newest first, one entry per trading day): the
+ * consecutive days, from the newest back, whose net has the same sign. Weekends
+ * and holidays are not trading days, so they never break a run; a day with zero
+ * net (including no institutional trades at all) does.
+ */
+export function currentStreak(daily: readonly { date: string; net: number }[]): Streak {
+  const sign = Math.sign(daily[0]?.net ?? 0)
+  if (sign === 0) return { direction: null, days: 0, at_least: false, net: 0, start_date: null }
+  let days = 0
+  let net = 0
+  while (days < daily.length && Math.sign(daily[days].net) === sign) {
+    net += daily[days].net
+    days += 1
+  }
+  return {
+    direction: sign > 0 ? 'buy' : 'sell',
+    days,
+    at_least: days === daily.length,
+    net,
+    start_date: daily[days - 1].date,
+  }
+}
