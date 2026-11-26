@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { cacheIfClosedMonth } from './disk-cache.js'
+import { type CachePolicy, cacheIfClosedMonth } from './disk-cache.js'
 import { requestJson } from './http.js'
 import { isIsoDate, type Market, marketDate, strictNumber, taipeiToday } from './market.js'
 
@@ -24,14 +24,19 @@ export type HistoryWindow = { start: string; end: string; months: string[] }
 
 export const RANGES = { '1m': 1, '3m': 3, '6m': 6, '1y': 12 } as const
 export type Range = keyof typeof RANGES
+/** Ranges longer than the daily cap; only month and year bars from the statistics pages cover them. */
+export const LONG_RANGES = { '3y': 36, '5y': 60, '10y': 120 } as const
+export type LongRange = keyof typeof LONG_RANGES
+const RANGE_MONTHS: Record<Range | LongRange, number> = { ...RANGES, ...LONG_RANGES }
 
-const MAX_SPAN_DAYS = 366
-const PAST_MONTH_TTL_MS = 6 * 60 * 60_000
-const CURRENT_MONTH_TTL_MS = 60_000
+/** The longest window of daily data one call loads (one request per month). */
+export const MAX_SPAN_DAYS = 366
+export const PAST_MONTH_TTL_MS = 6 * 60 * 60_000
+export const CURRENT_MONTH_TTL_MS = 60_000
 /** Pause between uncached requests so a long range is not a burst against the exchange. */
 const REQUEST_GAP_MS = 250
 
-function monthsBetween(start: string, end: string): string[] {
+export function monthsBetween(start: string, end: string): string[] {
   const cursor = new Date(`${start.slice(0, 7)}-01T00:00:00Z`)
   const months: string[] = []
   while (cursor.toISOString().slice(0, 7) <= end.slice(0, 7)) {
@@ -42,18 +47,31 @@ function monthsBetween(start: string, end: string): string[] {
 }
 
 /** A window ending today (Asia/Taipei) going back `range` calendar months. */
-export function rangeWindow(range: Range, now = new Date()): HistoryWindow {
+export function rangeWindow(range: Range | LongRange, now = new Date()): HistoryWindow {
   const end = taipeiToday(now)
   const [year, month, day] = end.split('-').map(Number)
-  const first = new Date(Date.UTC(year, month - 1 - RANGES[range], 1))
+  const first = new Date(Date.UTC(year, month - 1 - RANGE_MONTHS[range], 1))
   const lastDay = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate()
   first.setUTCDate(Math.min(day, lastDay))
   const start = first.toISOString().slice(0, 10)
   return { start, end, months: monthsBetween(start, end) }
 }
 
-/** An explicit window; throws a message written for the caller to act on. */
-export function dateWindow(start: string, end: string | undefined, now = new Date()): HistoryWindow {
+/** Days from `start` to `end`, both YYYY-MM-DD. */
+export function spanDays(start: string, end: string): number {
+  return Math.round((Date.parse(end) - Date.parse(start)) / 86_400_000)
+}
+
+/**
+ * An explicit window; throws a message written for the caller to act on.
+ * `maxDays` caps the span (pass Infinity when the caller applies its own rules).
+ */
+export function dateWindow(
+  start: string,
+  end: string | undefined,
+  now = new Date(),
+  maxDays = MAX_SPAN_DAYS
+): HistoryWindow {
   const today = taipeiToday(now)
   const last = end ?? today
   if (!isIsoDate(start)) throw new Error(`start must be a real date in YYYY-MM-DD form, got "${start}"`)
@@ -61,9 +79,9 @@ export function dateWindow(start: string, end: string | undefined, now = new Dat
   if (start > last) throw new Error(`start (${start}) is after end (${last})`)
   if (start > today) throw new Error(`start (${start}) is in the future; today is ${today} in Asia/Taipei`)
   const clampedEnd = last > today ? today : last
-  const span = (Date.parse(clampedEnd) - Date.parse(start)) / 86_400_000
-  if (span > MAX_SPAN_DAYS) {
-    throw new Error(`The window spans ${Math.round(span)} days; the maximum is ${MAX_SPAN_DAYS}. Split it into several calls.`)
+  const span = spanDays(start, clampedEnd)
+  if (span > maxDays) {
+    throw new Error(`The window spans ${span} days; the maximum is ${maxDays}. Split it into several calls.`)
   }
   return { start, end: clampedEnd, months: monthsBetween(start, clampedEnd) }
 }
@@ -121,31 +139,119 @@ export function parseHistory(data: unknown, month: string, market: Market): Dail
   return bars
 }
 
-const cache = new Map<string, { expiresAt: number; bars: Promise<DailyBar[]> }>()
+/** Where one month of daily bars comes from: a stock's daily page, or an index's. */
+export type MonthlySource = {
+  /** Names the series in errors, e.g. "TSE history for 2330". */
+  label: string
+  url(month: string): string
+  parse(data: unknown, month: string): DailyBar[]
+  /**
+   * True when the source publishes no change: it is derived from the previous
+   * close once the earlier months are loaded (see deriveChanges).
+   */
+  derivesChange?: boolean
+}
+
+export function stockMonthly(code: string, market: Market): MonthlySource {
+  return {
+    label: `${market.toUpperCase()} history for ${code}`,
+    url: (month) => historyUrl(code, month, market),
+    parse: (data, month) => parseHistory(data, month, market),
+  }
+}
+
+/** Fills a missing change from the previous bar's close, for sources that publish none. */
+export function deriveChanges(bars: readonly DailyBar[]): DailyBar[] {
+  return bars.map((bar, index) =>
+    bar.change !== null || index === 0
+      ? bar
+      : { ...bar, change: Math.round((bar.close - bars[index - 1].close) * 100) / 100 }
+  )
+}
+
+const cache = new Map<string, { expiresAt: number; value: Promise<unknown> }>()
 
 export function resetHistoryCache(): void {
   cache.clear()
 }
 
-async function loadMonth(
-  code: string,
-  month: string,
-  market: Market,
-  signal?: AbortSignal
-): Promise<{ bars: DailyBar[]; cached: boolean }> {
-  const url = historyUrl(code, month, market)
-  const hit = cache.get(url)
-  if (hit && hit.expiresAt > Date.now()) return { bars: await hit.bars, cached: true }
+export type Loaded<T> = { value: T; cached: boolean }
 
-  const ttl = month < taipeiToday().slice(0, 7) ? PAST_MONTH_TTL_MS : CURRENT_MONTH_TTL_MS
-  const bars = requestJson<unknown>(url, { signal, cache: cacheIfClosedMonth(month) }).then((data) => parseHistory(data, month, market))
-  cache.set(url, { expiresAt: Date.now() + ttl, bars })
+/**
+ * Fetches one exchange page and parses it, caching the parsed value by URL for
+ * `ttlMs`. Every history request (months of daily bars, monthly and yearly
+ * statistics) goes through this one call. `diskCache` marks pages that can no
+ * longer change, for the opt-in disk cache.
+ */
+export async function loadPage<T>(
+  url: string,
+  ttlMs: number,
+  parse: (data: unknown) => T,
+  signal?: AbortSignal,
+  diskCache?: CachePolicy
+): Promise<Loaded<T>> {
+  const hit = cache.get(url)
+  if (hit && hit.expiresAt > Date.now()) return { value: (await hit.value) as T, cached: true }
+
+  const value = requestJson<unknown>(url, { signal, cache: diskCache }).then(parse)
+  cache.set(url, { expiresAt: Date.now() + ttlMs, value })
   try {
-    return { bars: await bars, cached: false }
+    return { value: await value, cached: false }
   } catch (error) {
     cache.delete(url)
-    throw new Error(`Cannot load ${market.toUpperCase()} history for ${code} in ${month}: ${error instanceof Error ? error.message : String(error)}`)
+    throw error
   }
+}
+
+async function loadMonth(source: MonthlySource, month: string, signal?: AbortSignal): Promise<Loaded<DailyBar[]>> {
+  const ttl = month < taipeiToday().slice(0, 7) ? PAST_MONTH_TTL_MS : CURRENT_MONTH_TTL_MS
+  try {
+    return await loadPage(source.url(month), ttl, (data) => source.parse(data, month), signal, cacheIfClosedMonth(month))
+  } catch (error) {
+    throw new Error(`Cannot load ${source.label} in ${month}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+/** One request of a multi-request load. */
+export type Step<T> = () => Promise<Loaded<T>>
+
+/**
+ * Runs `steps` in order, pausing after each one that went to the network so a
+ * long range is not a burst against the exchange. Every multi-request history
+ * load goes through this loop.
+ */
+export async function runSequentially<T>(steps: readonly Step<T>[], signal?: AbortSignal): Promise<T[]> {
+  const values: T[] = []
+  let previousWasNetwork = false
+  for (const step of steps) {
+    signal?.throwIfAborted()
+    if (previousWasNetwork) await delay(REQUEST_GAP_MS, undefined, { signal })
+    const result = await step()
+    previousWasNetwork = !result.cached
+    values.push(result.value)
+  }
+  return values
+}
+
+/** A step that loads one month of daily bars from `source`. */
+export function monthStep(source: MonthlySource, month: string, signal?: AbortSignal): Step<DailyBar[]> {
+  return () => loadMonth(source, month, signal)
+}
+
+/** Merges pages of daily bars, sorted by date; a later page wins on a duplicate date. */
+export function mergeBars(pages: readonly (readonly DailyBar[])[]): DailyBar[] {
+  const bars = new Map<string, DailyBar>()
+  for (const page of pages) for (const bar of page) bars.set(bar.date, bar)
+  return [...bars.values()].sort((left, right) => left.date.localeCompare(right.date))
+}
+
+/** Loads daily bars of `source` for `months`, sequentially, sorted by date. */
+export async function loadSeries(
+  source: MonthlySource,
+  months: readonly string[],
+  signal?: AbortSignal
+): Promise<DailyBar[]> {
+  return mergeBars(await runSequentially(months.map((month) => monthStep(source, month, signal)), signal))
 }
 
 /** Loads daily bars for `months`, sequentially, sorted by date. */
@@ -155,16 +261,7 @@ export async function loadBars(
   months: readonly string[],
   signal?: AbortSignal
 ): Promise<DailyBar[]> {
-  const bars = new Map<string, DailyBar>()
-  let previousWasNetwork = false
-  for (const month of months) {
-    signal?.throwIfAborted()
-    if (previousWasNetwork) await delay(REQUEST_GAP_MS, undefined, { signal })
-    const result = await loadMonth(code, month, market, signal)
-    previousWasNetwork = !result.cached
-    for (const bar of result.bars) bars.set(bar.date, bar)
-  }
-  return [...bars.values()].sort((left, right) => left.date.localeCompare(right.date))
+  return loadSeries(stockMonthly(code, market), months, signal)
 }
 
 export function previousMonth(month: string): string {
@@ -178,14 +275,23 @@ export function previousMonth(month: string): string {
  * before `window.start`, the previous month, so the summary can measure change
  * from the close before the window.
  */
+export async function loadSeriesWithReference(
+  source: MonthlySource,
+  window: HistoryWindow,
+  signal?: AbortSignal
+): Promise<DailyBar[]> {
+  const bars = await loadSeries(source, window.months, signal)
+  if (!bars.length || bars.some((bar) => bar.date < window.start)) return bars
+  const earlier = await loadSeries(source, [previousMonth(window.months[0])], signal)
+  return [...earlier, ...bars]
+}
+
+/** loadSeriesWithReference for a stock's daily pages. */
 export async function loadBarsWithReference(
   code: string,
   market: Market,
   window: HistoryWindow,
   signal?: AbortSignal
 ): Promise<DailyBar[]> {
-  const bars = await loadBars(code, market, window.months, signal)
-  if (!bars.length || bars.some((bar) => bar.date < window.start)) return bars
-  const earlier = await loadBars(code, market, [previousMonth(window.months[0])], signal)
-  return [...earlier, ...bars]
+  return loadSeriesWithReference(stockMonthly(code, market), window, signal)
 }

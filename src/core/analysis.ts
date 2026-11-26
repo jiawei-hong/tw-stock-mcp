@@ -1,7 +1,7 @@
 import type { DailyBar } from './history.js'
 import { type Indicator, indicatorSeries, type IndicatorValues } from './indicators.js'
 
-export type Interval = 'day' | 'week' | 'month'
+export type Interval = 'day' | 'week' | 'month' | 'year'
 
 export type Bar = Omit<DailyBar, 'change'> & {
   /** Last trading date in the bar (for week/month); equals `date` for day bars. */
@@ -79,7 +79,11 @@ export function buildBars(
   const groups = new Map<string, { bar: DailyBar; index: number }[]>()
   for (const entry of daily) {
     const key =
-      interval === 'day' ? entry.bar.date : interval === 'week' ? isoWeek(entry.bar.date) : entry.bar.date.slice(0, 7)
+      interval === 'day'
+        ? entry.bar.date
+        : interval === 'week'
+          ? isoWeek(entry.bar.date)
+          : entry.bar.date.slice(0, interval === 'year' ? 4 : 7)
     const group = groups.get(key)
     if (group) group.push(entry)
     else groups.set(key, [entry])
