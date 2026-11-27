@@ -35,7 +35,9 @@ function expectAnsweredFor(report: Report, date: string) {
 }
 
 describe('www.tpex.org.tw', () => {
-  test('www/zh-tw/afterTrading/tradingStock (monthly history)', () => {
+  test('www/zh-tw/afterTrading/tradingStock (monthly history)', async () => {
+    // The shared lookup in beforeAll failed: look again here, so vitest's retry really retries.
+    if (session.error) session = await recentSession('otc', '6488')
     if (session.error) throw session.error
     const table = firstTable(session.history as Report)
     // parseHistory: date 0, lots 1, thousands of TWD 2, open 3, high 4, low 5, close 6, change 7, trades 8.
