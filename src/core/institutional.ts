@@ -143,10 +143,10 @@ export function resetInstitutionalCache(): void {
   cache.clear()
 }
 
-export function loadInstitutional(date: string, market: Market, signal?: AbortSignal) {
+export function loadInstitutional(date: string, market: Market, signal?: AbortSignal, onNetwork?: () => void) {
   const url = institutionalUrl(date, market)
   return cache.get(url, date, async () =>
-    parseInstitutional(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market)
+    parseInstitutional(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date), onNetwork }), market)
   )
 }
 

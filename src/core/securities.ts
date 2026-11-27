@@ -37,12 +37,12 @@ export type Security = {
 
 /**
  * The TDCC feed has no type column, so classify by Taiwan's code conventions:
- * 2330 stock, 0050 / 00878 / 00631L ETF, 2881A preferred, 020000 ETN,
+ * 2330 stock, 0050 / 00878 / 00631L ETF, 2881A preferred, 020000 / 02001L ETN,
  * 23301 convertible bond, 030156 / 7xxxxx warrant. Best effort.
  */
 export function classifySecurity(code: string): SecurityType {
   if (/^00\d{2,4}[A-Z]?$/.test(code)) return 'etf'
-  if (/^020\d{3}$/.test(code)) return 'etn'
+  if (/^020\d{2}[0-9A-Z]$/.test(code)) return 'etn'
   if (/^[1-9]\d{3}$/.test(code)) return 'stock'
   if (/^[1-9]\d{3}[A-Z]$/.test(code)) return 'preferred'
   if (/^[1-9]\d{4}$/.test(code)) return 'convertible_bond'

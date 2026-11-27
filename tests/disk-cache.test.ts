@@ -7,13 +7,14 @@ import {
   CACHE_DIR_ENV,
   cacheIfClosedMonth,
   cacheIfPastDay,
+  cacheIfSettled,
   DiskCache,
   diskCacheFromEnv,
   getDiskCache,
   isCompleteAnswer,
   resetDiskCache,
 } from '../src/core/disk-cache.js'
-import { historyUrl, loadBars, resetHistoryCache } from '../src/core/history.js'
+import { historyUrl, loadBars, loadPage, resetHistoryCache } from '../src/core/history.js'
 import { HostLimiter, requestJson } from '../src/core/http.js'
 import { institutionalUrl, loadInstitutional, loadSummary, resetInstitutionalCache, summaryUrl } from '../src/core/institutional.js'
 import { loadMargin, marginUrl, resetMarginCache } from '../src/core/margin.js'
@@ -94,6 +95,14 @@ describe('cache policies', () => {
     expect(cacheIfClosedMonth('2026-11', now)).toBeUndefined()
     // 1 Dec 00:30 in Taipei: November has ended.
     expect(cacheIfClosedMonth('2026-11', new Date('2026-11-30T16:30:00Z'))).toEqual({ mode: 'immutable', date: '2026-11' })
+  })
+
+  it('marks restatable reports only once they are 14 calendar days old', () => {
+    expect(cacheIfSettled('2026-11-11', now)).toEqual({ mode: 'immutable', date: '2026-11-11' })
+    expect(cacheIfSettled('2026-11-12', now)).toBeUndefined()
+    expect(cacheIfSettled('2026-11-24', now)).toBeUndefined()
+    // Across a month boundary.
+    expect(cacheIfSettled('2026-10-31', new Date('2026-11-14T04:00:00Z'))).toEqual({ mode: 'immutable', date: '2026-10-31' })
   })
 })
 
@@ -260,6 +269,15 @@ describe('requestJson with the disk cache', () => {
     resetDiskCache()
   }
 
+  it('calls onNetwork only when the answer comes from the exchange', async () => {
+    enable()
+    stubFetch({ 'www.twse.com.tw': () => twseData(PAST, [t86Row]) })
+    const onNetwork = vi.fn()
+    await requestJson(url, { cache: policy, onNetwork })
+    await requestJson(url, { cache: policy, onNetwork })
+    expect(onNetwork).toHaveBeenCalledTimes(1)
+  })
+
   it('answers an immutable request from disk without touching the network or the queue', async () => {
     enable()
     const { fetchMock } = stubFetch({ 'www.twse.com.tw': () => twseData(PAST, [t86Row]) })
@@ -350,15 +368,28 @@ describe('call sites', () => {
     expect(fetchMock).toHaveBeenCalledTimes(5)
   })
 
-  it('keeps past margin days on both exchanges', async () => {
+  it('keeps margin days on both exchanges only once they have settled', async () => {
+    // Margin balances are provisional until the next day's report: a recent day stays off disk.
+    const SETTLED = '2026-11-06'
     stubFetch({
-      'www.twse.com.tw': () => twseTables(PAST, [{ title: '信用交易統計', data: [] }, { title: '融資融券彙總 (全部)', data: [['2330']] }]),
-      'www.tpex.org.tw': () => tpexTables(PAST, [['6488']]),
+      'www.twse.com.tw': (url) => {
+        const date = url.searchParams.get('date') ?? ''
+        const iso = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6)}`
+        return twseTables(iso, [{ title: '信用交易統計', data: [] }, { title: '融資融券彙總 (全部)', data: [['2330']] }])
+      },
+      'www.tpex.org.tw': (url) => {
+        const [year, month, day] = (url.searchParams.get('d') ?? '').split('/')
+        return tpexTables(`${Number(year) + 1911}-${month}-${day}`, [['6488']])
+      },
     })
-    await loadMargin(PAST, 'tse')
-    await loadMargin(PAST, 'otc')
-    expect(await cached(marginUrl(PAST, 'tse'))).toBe(true)
-    expect(await cached(marginUrl(PAST, 'otc'))).toBe(true)
+    for (const date of [PAST, SETTLED]) {
+      await loadMargin(date, 'tse')
+      await loadMargin(date, 'otc')
+    }
+    expect(await cached(marginUrl(PAST, 'tse'))).toBe(false)
+    expect(await cached(marginUrl(PAST, 'otc'))).toBe(false)
+    expect(await cached(marginUrl(SETTLED, 'tse'))).toBe(true)
+    expect(await cached(marginUrl(SETTLED, 'otc'))).toBe(true)
   })
 
   it('keeps past TWSE daily quotes, and not a TPEx answer for the wrong day', async () => {
@@ -389,5 +420,14 @@ describe('call sites', () => {
     const bars = await loadBars('2330', 'tse', ['2026-10', '2026-11'])
     expect(bars.map((bar) => bar.date)).toEqual(['2026-10-02', '2026-11-02'])
     expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('counts a history page answered from disk as cached, so the page loop does not pause after it', async () => {
+    const { fetchMock } = stubFetch({ 'www.twse.com.tw': () => twseData('2026-10-01', [stockDayRow('2026-10-02')]) })
+    const page = () => loadPage(historyUrl('2330', '2026-10', 'tse'), 60_000, (data) => data, undefined, { mode: 'immutable', date: '2026-10' })
+    expect((await page()).cached).toBe(false)
+    resetHistoryCache()
+    expect((await page()).cached).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

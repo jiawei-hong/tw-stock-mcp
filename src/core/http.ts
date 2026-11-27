@@ -140,6 +140,37 @@ export type RequestJsonOptions = {
   cache?: CachePolicy
   /** The limiter to queue on. Defaults to the process-wide one; tests inject their own. */
   limiter?: HostLimiter
+  /**
+   * Called once when the answer has to come from the exchange, not the disk cache.
+   * Multi-request loops use it to pace real requests only (see RequestPacer).
+   */
+  onNetwork?: () => void
+}
+
+/**
+ * Pacing for a sequential multi-request loop: wait `gapMs` before a step only
+ * when the step before it went to the network. Steps answered from the memory
+ * or disk cache cost no wait. Pass `onNetwork` to every request of a step.
+ */
+export class RequestPacer {
+  private wentOut = false
+
+  constructor(
+    private readonly gapMs: number,
+    private readonly sleep: (delayMs: number, signal?: AbortSignal) => Promise<unknown> = (delayMs, signal) =>
+      delay(delayMs, undefined, { signal })
+  ) {}
+
+  readonly onNetwork = (): void => {
+    this.wentOut = true
+  }
+
+  /** Call before each step. */
+  async beforeStep(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted()
+    if (this.wentOut) await this.sleep(this.gapMs, signal)
+    this.wentOut = false
+  }
 }
 
 export class HttpStatusError extends Error {
@@ -211,6 +242,7 @@ export async function requestJson<T>(
     const hit = await disk.read(url, options.cache)
     if (hit !== undefined) return hit as T
   }
+  options.onNetwork?.()
   const data = await fetchWithRetries(url, options)
   // The cache keeps only complete answers for the requested period; see disk-cache.ts.
   if (disk && options.cache) await disk.write(url, options.cache, data)

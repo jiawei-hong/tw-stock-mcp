@@ -12,6 +12,7 @@ describe('classifySecurity', () => {
     ['00400A', 'etf'],
     ['2881A', 'preferred'],
     ['020000', 'etn'],
+    ['02001L', 'etn'],
     ['23301', 'convertible_bond'],
     ['030156', 'warrant'],
     ['03011T', 'warrant'],

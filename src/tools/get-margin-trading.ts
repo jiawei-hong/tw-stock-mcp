@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises'
 
 import {
   type CreditFlow,
@@ -13,6 +12,7 @@ import {
   type SblRestriction,
   type SblRow,
 } from '../core/margin.js'
+import { RequestPacer } from '../core/http.js'
 import { isIsoDate, type Market, normaliseCode, taipeiToday } from '../core/market.js'
 import { listedElsewhere, resolveSecurity } from '../core/resolve.js'
 import { classifySecurity, DEFAULT_SECURITY_TYPES } from '../core/securities.js'
@@ -433,12 +433,14 @@ export const getMarginTradingTool: Tool<Input> = {
     if (start !== undefined && start > found.date) {
       throw new ToolError(`start (${start}) is after the last trading day with data (${found.date}).`)
     }
+    // A pause before a day only when the previous one went to the network.
+    const pacer = new RequestPacer(DAY_GAP_MS)
     const tseDays = await previousTradingDays(
       { date: found.date, data: found.data },
       days,
       async (day) => {
-        await delay(DAY_GAP_MS, undefined, { signal })
-        return loadTse(day)
+        await pacer.beforeStep(signal)
+        return loadMargin(day, 'tse', signal, pacer.onNetwork)
       },
       start
     )
