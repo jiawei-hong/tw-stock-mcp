@@ -23,8 +23,6 @@ const REVISION_DAYS = 2
 type StockDayTrade = DayTradeRow & { total_volume: number | null; volume_percent: number | null }
 
 const EXCHANGE: Record<Market, string> = { tse: 'TWSE', otc: 'TPEx' }
-const TPEX_BASIS =
-  'TPEx volume_percent uses TPEx\'s regular-session volume, which leaves out odd-lot and after-hours fixed-price trades, so it reads slightly higher than on TWSE\'s all-session basis.'
 
 const rowSchema = {
   type: 'object',
@@ -38,7 +36,7 @@ const rowSchema = {
     total_volume: { type: ['number', 'null'], description: 'The stock\'s total volume that day, shares; null when unavailable or it did not trade' },
     volume_percent: {
       type: ['number', 'null'],
-      description: 'volume / total_volume x 100 (當沖比例). TWSE\'s total includes odd-lot, after-hours and block trades; TPEx\'s is the regular session only, so TPEx reads slightly higher.',
+      description: 'volume / total_volume x 100 (當沖比例). total_volume is the exchange\'s end-of-day total, odd-lot trades included, as get_market_movers reports it.',
     },
     sell_first_suspended: {
       type: 'boolean',
@@ -88,7 +86,7 @@ export const getDayTradingTool: Tool<Input> = {
   description: [
     'Day trading (現股當沖) for TWSE and TPEx stocks and ETFs on one trading day: shares day-traded, day-trade buy and sell amounts, and day trading\'s share of the stock\'s total volume (當沖比例).',
     'With `symbols`: per-stock figures. Without `symbols`: each exchange\'s totals with their published share of market volume and turnover, plus the most day-traded stocks and ETFs ranked by `rank_by`.',
-    `Share counts are in shares and amounts in TWD. volume_percent = volume / total_volume x 100; TWSE's total volume includes odd-lot, after-hours and block trades, TPEx's only the regular session, so TPEx percentages read slightly higher. Ranking by "percent" only considers stocks that traded at least ${MIN_VOLUME_FOR_PERCENT.toLocaleString('en-US')} shares.`,
+    `Share counts are in shares and amounts in TWD. volume_percent = volume / total_volume x 100, where total_volume is each exchange's end-of-day total (odd-lot trades included), the same figure get_market_movers and screen_stocks report. Ranking by "percent" only considers stocks that traded at least ${MIN_VOLUME_FOR_PERCENT.toLocaleString('en-US')} shares.`,
     'sell_first_suspended marks stocks where sell-first day trading is suspended (e.g. the 5 trading days before a book closure). Securities not eligible for day trading (e.g. 全額交割 stocks) are listed in `unresolved`.',
     'Brokers can correct a day\'s figures until two trading days later (T+2), when the exchanges publish the final numbers.',
     'Without `date`, uses the most recent trading day with published data; the exchanges publish it in the evening, Taipei time. One day per call: for a trend, call once per date.',
@@ -236,7 +234,6 @@ export const getDayTradingTool: Tool<Input> = {
         })
       }
       const stocks = await withVolumes(wanted)
-      if (stocks.some((row) => row.market === 'otc' && row.volume_percent !== null)) notes.push(TPEX_BASIS)
       return { ...period, stocks, unresolved, notes }
     }
 
@@ -256,7 +253,6 @@ export const getDayTradingTool: Tool<Input> = {
       .sort((left, right) => right.score - left.score)
       .slice(0, limit)
       .map(({ row }) => row)
-    if (ranked.some((row) => row.market === 'otc')) notes.push(TPEX_BASIS)
 
     return { ...period, market_summary, rank_by, most_day_traded: ranked, notes }
   },

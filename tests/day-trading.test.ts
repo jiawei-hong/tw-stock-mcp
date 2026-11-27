@@ -2,9 +2,7 @@ import { resetDailyQuotesCache } from '../src/core/daily-quotes.js'
 import {
   dayTradingUrl,
   parseDayTrading,
-  parseTpexVolumes,
   resetDayTradingCache,
-  tpexVolumeUrl,
 } from '../src/core/day-trading.js'
 import { resetSecurityCache } from '../src/core/securities.js'
 import { getDayTradingTool } from '../src/tools/get-day-trading.js'
@@ -34,12 +32,16 @@ const twseQuotes = [
   ['2330', '台積電', '13,213,039', '31,491', '29,465,076,970', '2,230.00', '2,230.00', '2,230.00', '2,230.00', '+', '200.00'],
   ['2603', '長榮', '44,303,479', '24,145', '11,020,616,792', '247.50', '257.00', '240.00', '257.00', '+', '22.50'],
 ]
-// TPEx www/zh-tw/afterTrading/otc (成交股數 at 7); 5347 is real for 2026-11-24, the others from 2026-11-25.
-const tpexQuoteFields = ['代號', '名稱', '收盤 ', '漲跌', '開盤 ', '最高 ', '最低', '成交股數  ', ' 成交金額(元)', ' 成交筆數 ']
+// TPEx www/zh-tw/afterTrading/dailyQuotes rows as core/daily-quotes reads them (成交股數 at 8, odd lots
+// included); the trailing bid/ask and limit columns are not read.
+const tpexQuote = (code: string, name: string, close: string, change: string, volume: string, turnover: string, trades: string) => [
+  code, name, close, change, close, close, close, close, volume, turnover, trades,
+  close, '1', close, '1', '1,000,000', close, close, close,
+]
 const tpexQuotes = [
-  ['3540', '曜越', '18.95', '-0.90', '19.85', '19.85', '18.60', '157,000', '2,988,750', '117'],
-  ['5347', '世界', '121.00', '+11.00', '121.00', '121.00', '121.00', '4,470,000', '540,870,000', '786'],
-  ['6488', '環球晶', '477.00', '-29.00', '479.00', '510.00', '455.50', '8,548,000', '4,102,973,000', '6,763'],
+  tpexQuote('3540', '曜越', '18.95', '-0.90', '157,000', '2,988,750', '117'),
+  tpexQuote('5347', '世界', '121.00', '+11.00', '4,470,000', '540,870,000', '786'),
+  tpexQuote('6488', '環球晶', '477.00', '-29.00', '8,548,000', '4,102,973,000', '6,763'),
 ]
 
 const ROW_FIELDS = ['證券代號', '證券名稱', '暫停現股賣出後現款買進當沖註記', '當日沖銷交易成交股數', '當日沖銷交易買進成交金額', '當日沖銷交易賣出成交金額']
@@ -76,7 +78,7 @@ const miIndex = (rows: string[][]) => ({
 const tpexQuotesResponse = (date: string, rows = tpexQuotes) => ({
   date,
   stat: 'ok',
-  tables: [{ title: '上櫃股票每日收盤行情(不含定價)', fields: tpexQuoteFields, data: rows, summary: [] }],
+  tables: [{ title: '上櫃股票行情', data: rows }],
 })
 
 /** The day a request asks for, as YYYYMMDD. */
@@ -136,23 +138,6 @@ describe('parseDayTrading', () => {
   it('builds exchange URLs', () => {
     expect(dayTradingUrl('2026-11-24', 'tse')).toBe('https://www.twse.com.tw/rwd/zh/dayTrading/TWTB4U?date=20261124&selectType=All&response=json')
     expect(dayTradingUrl('2026-11-24', 'otc')).toContain('intraday_trading_stat_result.php?l=zh-tw&o=json&d=115%2F11%2F24')
-    expect(tpexVolumeUrl('2026-11-24')).toBe('https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?date=2026%2F11%2F24&type=EW&response=json')
-  })
-})
-
-describe('parseTpexVolumes', () => {
-  it('maps codes to shares and checks the day', () => {
-    expect(parseTpexVolumes(tpexQuotesResponse('20261124'), '2026-11-24')).toEqual(
-      new Map([['3540', 157_000], ['5347', 4_470_000], ['6488', 8_548_000]])
-    )
-    expect(parseTpexVolumes(tpexQuotesResponse('20261122', []))).toBeNull()
-    expect(() => parseTpexVolumes(tpexQuotesResponse('20261125'), '2026-11-24')).toThrow('TPEx answered with quotes for 20261125 instead of 2026-11-24')
-  })
-
-  it('fails loudly when the volume column moves', () => {
-    const response = tpexQuotesResponse('20261124')
-    response.tables[0].fields = ['代號', '名稱']
-    expect(() => parseTpexVolumes(response)).toThrow('TPEx quotes have no 成交股數 column')
   })
 })
 
@@ -208,11 +193,10 @@ describe('get_day_trading', () => {
     expect(result.notes).toEqual([
       'Latest available trading day: 2026-11-24.',
       'Figures for 2026-11-24 may still change: brokers can correct day trades until two trading days later, when the exchanges publish the final numbers.',
-      expect.stringContaining('TPEx volume_percent uses TPEx\'s regular-session volume'),
     ])
     // One full-market volume request per exchange, never one per stock.
     expect(calls.filter((url) => url.pathname.endsWith('MI_INDEX'))).toHaveLength(1)
-    expect(calls.filter((url) => url.pathname.includes('afterTrading/otc'))).toHaveLength(1)
+    expect(calls.filter((url) => url.pathname.includes('afterTrading/dailyQuotes'))).toHaveLength(1)
   })
 
   it('skips the TPEx volume request when no TPEx stock was asked for', async () => {

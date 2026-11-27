@@ -1,4 +1,4 @@
-import { loadTwseDaily } from './daily-quotes.js'
+import { loadTpexDaily, loadTwseDaily } from './daily-quotes.js'
 import { requestJson } from './http.js'
 import { type Market, strictNumber } from './market.js'
 import { DailyCache } from './trading-day.js'
@@ -20,12 +20,11 @@ import { DailyCache } from './trading-day.js'
  * suspended): "Y" on TWSE, "＊" on TPEx. Brokers can correct a day's figures until T+2; the exchanges
  * republish on T+1 and T+2, and the T+2 figures are final.
  *
- * Neither source gives a security's total volume, which its share of volume needs:
- * - TWSE: MI_INDEX via core/daily-quotes. Its volume includes regular, odd-lot, after-hours
- *   fixed-price and block trades, the same basis as TWSE's market-wide percentage.
- * - TPEx: www/zh-tw/afterTrading/otc (type=EW), verified the same day. It was chosen while
- *   core/daily-quotes still used stk_quote_result.php, which ignored `d`; core/daily-quotes now honours
- *   the date. Its volume is regular-session round lots only (no odd-lot or fixed-price trades, about 1% less).
+ * Neither source gives a security's total volume, which its share of volume needs. It comes from
+ * each exchange's end-of-day quotes in core/daily-quotes (TWSE MI_INDEX, TPEx dailyQuotes), the
+ * same figures get_market_movers and screen_stocks report. Both include odd-lot trades: on
+ * 2026-11-26, TPEx dailyQuotes summed to 1.08% more than the round-lot afterTrading/otc page that
+ * was used before (6488: 7,803,697 against 7,586,000 shares).
  */
 
 export type DayTradeRow = {
@@ -78,12 +77,6 @@ export function dayTradingUrl(date: string, market: Market): string {
   }
   const query = new URLSearchParams({ date: date.replaceAll('-', ''), selectType: 'All', response: 'json' })
   return `https://www.twse.com.tw/rwd/zh/dayTrading/TWTB4U?${query}`
-}
-
-/** TPEx daily quotes that honour the date (see the module comment). */
-export function tpexVolumeUrl(date: string): string {
-  const query = new URLSearchParams({ date: date.replaceAll('-', '/'), type: 'EW', response: 'json' })
-  return `https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?${query}`
 }
 
 type Table = { fields?: unknown; data?: unknown }
@@ -171,26 +164,6 @@ export function parseDayTrading(data: unknown, market: Market, date?: string): D
   }
 }
 
-/** Each security's volume in shares from TPEx's dated quotes, or null when there are none. */
-export function parseTpexVolumes(data: unknown, date?: string): Map<string, number> | null {
-  const tables = tablesOf(data, 'TPEx quotes')
-  if (!tables) return null
-  const [table] = tables
-  if (!table || !Array.isArray(table.data)) throw new Error('Invalid TPEx quotes rows')
-  if (!table.data.length) return null
-  checkDate(data, 'otc', 'quotes', date)
-  const column = fieldIndex(table, '成交股數')
-  if (column < 0) throw new Error('TPEx quotes have no 成交股數 column')
-  const volumes = new Map<string, number>()
-  for (const row of table.data) {
-    if (!Array.isArray(row)) continue
-    const code = String(row[0]).trim().toUpperCase()
-    const volume = strictNumber(row[column])
-    if (code && volume !== null) volumes.set(code, volume)
-  }
-  return volumes
-}
-
 const cache = new DailyCache()
 
 export function resetDayTradingCache(): void {
@@ -207,16 +180,10 @@ export function loadDayTrading(date: string, market: Market, signal?: AbortSigna
 
 /**
  * Each security's total volume (shares) on `date`, or null when the exchange has none.
- * One full-market request per exchange; TWSE's is shared with the other end-of-day tools.
+ * One full-market request per exchange, shared with the other end-of-day tools.
  */
 export async function loadVolumes(date: string, market: Market, signal?: AbortSignal): Promise<Map<string, number> | null> {
-  if (market === 'tse') {
-    const daily = await loadTwseDaily(date, signal)
-    if (!daily) return null
-    return new Map(daily.quotes.flatMap((quote) => (quote.volume === null ? [] : [[quote.code, quote.volume] as const])))
-  }
-  const url = tpexVolumeUrl(date)
-  return cache.get(url, date, async () =>
-    parseTpexVolumes(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 }), date)
-  )
+  const quotes = market === 'tse' ? (await loadTwseDaily(date, signal))?.quotes : await loadTpexDaily(date, signal)
+  if (!quotes) return null
+  return new Map(quotes.flatMap((quote) => (quote.volume === null ? [] : [[quote.code, quote.volume] as const])))
 }

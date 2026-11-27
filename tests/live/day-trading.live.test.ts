@@ -1,5 +1,6 @@
 // Live contract test: hits the real day-trading endpoints once each and checks the fields
-// src/core/day-trading.ts reads. A past trading day keeps the answers stable.
+// src/core/day-trading.ts reads. A past trading day keeps the answers stable. Total volumes come from
+// core/daily-quotes, whose endpoints tests/live/twse.live.test.ts and tpex.live.test.ts cover.
 
 const TIMEOUT = 30_000
 const NUMBER = /^[+-]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/
@@ -45,21 +46,5 @@ describe('day trading endpoints', () => {
     checkDayTrading(
       await getJson('https://www.tpex.org.tw/web/stock/trading/intraday_stat/intraday_trading_stat_result.php?l=zh-tw&o=json&d=115%2F11%2F24&s=0%2Casc%2C0')
     )
-  })
-
-  it('TPEx dated quotes (afterTrading/otc) answer for the day asked', { timeout: TIMEOUT }, async () => {
-    const body = await getJson('https://www.tpex.org.tw/www/zh-tw/afterTrading/otc?date=2026%2F11%2F24&type=EW&response=json')
-    expect(body.stat?.toLowerCase()).toBe('ok')
-    expect(body.date).toBe('20261124')
-    const [table] = body.tables ?? []
-    const fields = trimmed(table?.fields)
-    expect(fields[0]).toBe('代號')
-    const volume = fields.indexOf('成交股數')
-    expect(volume).toBeGreaterThan(1)
-    expect(table?.data?.length).toBeGreaterThan(100)
-    for (const row of table!.data!.slice(0, 20)) {
-      expect(String(row[0]).trim()).toMatch(/^[A-Z0-9]+$/)
-      expect(row[volume]).toMatch(NUMBER)
-    }
   })
 })
