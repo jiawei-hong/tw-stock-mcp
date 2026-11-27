@@ -5,9 +5,11 @@ name: Contract
 # CI so `pnpm test` stays offline.
 on:
   schedule:
-    # Weekdays 10:00 UTC = 18:00 Taipei, after the close. Tests use the previous
-    # trading day, so reports published in the evening are complete.
-    - cron: '0 10 * * 1-5'
+    # Weekdays 10:17 UTC = 18:17 Taipei, after the close. Tests use the previous
+    # trading day, so reports published in the evening are complete. Off the top
+    # of the hour, when GitHub delays or drops the most scheduled runs (the
+    # 10:00 run on 2026-11-27 never started).
+    - cron: '17 10 * * 1-5'
   workflow_dispatch:
 
 # Least privilege: the job only reads the repository.
