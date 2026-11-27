@@ -1,4 +1,4 @@
-import { HostLimiter, requestJson } from '../src/core/http.js'
+import { HostLimiter, RequestPacer, requestJson } from '../src/core/http.js'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -256,5 +256,26 @@ describe('requestJson with the per-host limiter', () => {
       'Request failed for www.twse.com.tw/missing after 1 attempt: HTTP 404'
     )
     expect(limiter.load('www.twse.com.tw')).toEqual({ active: 0, waiting: 0 })
+  })
+})
+
+describe('RequestPacer', () => {
+  it('pauses before a step only when the previous step went to the network', async () => {
+    const sleep = vi.fn(async (_ms: number) => {})
+    const pacer = new RequestPacer(200, sleep)
+    await pacer.beforeStep() // first step: nothing before it
+    pacer.onNetwork()
+    await pacer.beforeStep() // after a network step: pause
+    await pacer.beforeStep() // after a cached step: no pause
+    pacer.onNetwork()
+    pacer.onNetwork() // several requests in one step: still one pause
+    await pacer.beforeStep()
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([200, 200])
+  })
+
+  it('stops at once when the signal is aborted', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(new RequestPacer(200).beforeStep(controller.signal)).rejects.toThrow()
   })
 })

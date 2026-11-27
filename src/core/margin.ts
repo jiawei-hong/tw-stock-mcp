@@ -219,10 +219,10 @@ export function resetMarginCache(): void {
   cache.clear()
 }
 
-export function loadMargin(date: string, market: Market, signal?: AbortSignal) {
+export function loadMargin(date: string, market: Market, signal?: AbortSignal, onNetwork?: () => void) {
   const url = marginUrl(date, market)
   return cache.get(url, date, async () =>
-    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market, date)
+    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date), onNetwork }), market, date)
   )
 }
 

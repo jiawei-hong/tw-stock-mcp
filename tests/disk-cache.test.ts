@@ -13,7 +13,7 @@ import {
   isCompleteAnswer,
   resetDiskCache,
 } from '../src/core/disk-cache.js'
-import { historyUrl, loadBars, resetHistoryCache } from '../src/core/history.js'
+import { historyUrl, loadBars, loadPage, resetHistoryCache } from '../src/core/history.js'
 import { HostLimiter, requestJson } from '../src/core/http.js'
 import { institutionalUrl, loadInstitutional, loadSummary, resetInstitutionalCache, summaryUrl } from '../src/core/institutional.js'
 import { loadMargin, marginUrl, resetMarginCache } from '../src/core/margin.js'
@@ -260,6 +260,15 @@ describe('requestJson with the disk cache', () => {
     resetDiskCache()
   }
 
+  it('calls onNetwork only when the answer comes from the exchange', async () => {
+    enable()
+    stubFetch({ 'www.twse.com.tw': () => twseData(PAST, [t86Row]) })
+    const onNetwork = vi.fn()
+    await requestJson(url, { cache: policy, onNetwork })
+    await requestJson(url, { cache: policy, onNetwork })
+    expect(onNetwork).toHaveBeenCalledTimes(1)
+  })
+
   it('answers an immutable request from disk without touching the network or the queue', async () => {
     enable()
     const { fetchMock } = stubFetch({ 'www.twse.com.tw': () => twseData(PAST, [t86Row]) })
@@ -389,5 +398,14 @@ describe('call sites', () => {
     const bars = await loadBars('2330', 'tse', ['2026-10', '2026-11'])
     expect(bars.map((bar) => bar.date)).toEqual(['2026-10-02', '2026-11-02'])
     expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('counts a history page answered from disk as cached, so the page loop does not pause after it', async () => {
+    const { fetchMock } = stubFetch({ 'www.twse.com.tw': () => twseData('2026-10-01', [stockDayRow('2026-10-02')]) })
+    const page = () => loadPage(historyUrl('2330', '2026-10', 'tse'), 60_000, (data) => data, undefined, { mode: 'immutable', date: '2026-10' })
+    expect((await page()).cached).toBe(false)
+    resetHistoryCache()
+    expect((await page()).cached).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

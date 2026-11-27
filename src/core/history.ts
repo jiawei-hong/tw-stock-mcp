@@ -193,10 +193,13 @@ export async function loadPage<T>(
   const hit = cache.get(url)
   if (hit && hit.expiresAt > Date.now()) return { value: (await hit.value) as T, cached: true }
 
-  const value = requestJson<unknown>(url, { signal, cache: diskCache }).then(parse)
+  // A page the disk cache answers made no request, so it is `cached` too and costs no pause.
+  let network = false
+  const value = requestJson<unknown>(url, { signal, cache: diskCache, onNetwork: () => (network = true) }).then(parse)
   cache.set(url, { expiresAt: Date.now() + ttlMs, value })
   try {
-    return { value: await value, cached: false }
+    const parsed = await value
+    return { value: parsed, cached: !network }
   } catch (error) {
     cache.delete(url)
     throw error

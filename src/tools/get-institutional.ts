@@ -1,4 +1,3 @@
-import { setTimeout as delay } from 'node:timers/promises'
 
 import {
   currentStreak,
@@ -9,6 +8,7 @@ import {
   type MarketSummary,
   type Streak,
 } from '../core/institutional.js'
+import { RequestPacer } from '../core/http.js'
 import { isIsoDate, type Market, normaliseCode } from '../core/market.js'
 import { listedElsewhere, resolveSecurity } from '../core/resolve.js'
 import { classifySecurity, DEFAULT_SECURITY_TYPES } from '../core/securities.js'
@@ -164,9 +164,15 @@ function sumSummaries(summaries: MarketSummary[]): MarketSummary | null {
 }
 
 /** One trading day: TWSE rows are already loaded (TWSE decides which days traded); other markets are fetched. */
-async function loadDay(date: string, tseRows: InstitutionalRow[], markets: readonly Market[], signal: AbortSignal): Promise<Day> {
+async function loadDay(
+  date: string,
+  tseRows: InstitutionalRow[],
+  markets: readonly Market[],
+  signal: AbortSignal,
+  onNetwork?: () => void
+): Promise<Day> {
   const tables = await Promise.all(
-    markets.map(async (entry) => (entry === 'tse' ? tseRows : (await loadInstitutional(date, entry, signal)) ?? []))
+    markets.map(async (entry) => (entry === 'tse' ? tseRows : (await loadInstitutional(date, entry, signal, onNetwork)) ?? []))
   )
   const rows = tables.flat()
   return { date, rows, byCode: new Map(rows.map((row) => [row.code, row])) }
@@ -182,6 +188,7 @@ async function extendDays(
   days: Day[],
   want: (days: readonly Day[]) => readonly Market[],
   signal: AbortSignal,
+  pacer: RequestPacer,
   notBefore?: string,
   onDay?: () => void
 ): Promise<void> {
@@ -191,13 +198,13 @@ async function extendDays(
       oldest,
       2,
       async (date) => {
-        await delay(DAY_GAP_MS, undefined, { signal })
-        return loadInstitutional(date, 'tse', signal)
+        await pacer.beforeStep(signal)
+        return loadInstitutional(date, 'tse', signal, pacer.onNetwork)
       },
       notBefore
     )
     if (!earlier) return
-    days.push(await loadDay(earlier.date, earlier.data, markets, signal))
+    days.push(await loadDay(earlier.date, earlier.data, markets, signal, pacer.onNetwork))
     onDay?.()
   }
 }
@@ -222,7 +229,7 @@ function hasOpenStreak(days: readonly Day[], code: string): boolean {
  * further back only while some streak is still unbroken, up to STREAK_DAYS trading days, loading only the markets
  * of the stocks whose streaks are still open. The full-market tables serve every stock at once.
  */
-async function addStreaks(stocks: Aggregate[], period: readonly Day[], signal: AbortSignal, onDay?: () => void) {
+async function addStreaks(stocks: Aggregate[], period: readonly Day[], signal: AbortSignal, pacer: RequestPacer, onDay?: () => void) {
   const days = period.slice(0, STREAK_DAYS)
   await extendDays(
     days,
@@ -231,6 +238,7 @@ async function addStreaks(stocks: Aggregate[], period: readonly Day[], signal: A
         ? []
         : [...new Set(stocks.filter((stock) => hasOpenStreak(loaded, stock.code)).map((stock) => stock.market))],
     signal,
+    pacer,
     undefined,
     onDay
   )
@@ -363,10 +371,12 @@ export const getInstitutionalTool: Tool<Input> = {
     const total = start === undefined && !streak ? days : undefined
     let loadedDays = 0
     const onDay = () => progress?.(++loadedDays, total, `Loaded ${loadedDays} trading day${loadedDays === 1 ? '' : 's'}`)
-    const loaded = [await loadDay(found.date, found.data, markets, signal)]
+    // One pacer for the whole call: a pause only after a day that went to the network.
+    const pacer = new RequestPacer(DAY_GAP_MS)
+    const loaded = [await loadDay(found.date, found.data, markets, signal, pacer.onNetwork)]
     onDay()
     // With start, the day past MAX_DAYS only shows the period is too long, so TWSE alone is enough.
-    await extendDays(loaded, (period) => (period.length >= days ? [] : period.length === MAX_DAYS ? ['tse'] : markets), signal, start, onDay)
+    await extendDays(loaded, (period) => (period.length >= days ? [] : period.length === MAX_DAYS ? ['tse'] : markets), signal, pacer, start, onDay)
     if (start !== undefined && loaded.length > MAX_DAYS) {
       throw new ToolError(`${start} to ${found.date} spans more than ${MAX_DAYS} trading days; use a later start or split the period.`)
     }
@@ -417,7 +427,7 @@ export const getInstitutionalTool: Tool<Input> = {
         })
       }
       if (!streak || !stocks.length) return { ...period, stocks, unresolved, notes }
-      const streakWindow = await addStreaks(stocks, loaded, signal, onDay)
+      const streakWindow = await addStreaks(stocks, loaded, signal, pacer, onDay)
       notes.push(
         `Streaks count consecutive trading days of net buying (or selling) ending ${streakWindow.end_date}, examined back to ${streakWindow.start_date} (${streakWindow.trading_days} of at most ${STREAK_DAYS} trading days). Weekends and holidays are skipped; a day with zero net ends a streak; at_least marks a streak that reached the ${STREAK_DAYS}-day lookback.`
       )
