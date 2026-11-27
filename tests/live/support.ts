@@ -22,18 +22,44 @@ const GAP_MS = 2_000
 const lastRequest = new Map<string, number>()
 
 /**
- * GETs `url` with a plain fetch and no custom headers, as the server does, and
- * parses the body as JSON. Throws with the status and the start of the body on
- * a non-2xx answer or a body that is not JSON.
+ * Pauses before the second and third attempt at a transient failure. The runners
+ * are outside Taiwan, and a connection to the exchanges occasionally times out
+ * (2026-11-27: one UND_ERR_CONNECT_TIMEOUT to www.tpex.org.tw, fine 2 minutes later).
  */
-export async function getJson<T = unknown>(url: string, timeoutMs = 90_000): Promise<T> {
+export const RETRY_DELAYS_MS = [5_000, 15_000]
+
+class HttpError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
+
+/**
+ * Worth another attempt: the connection failed (fetch's TypeError, e.g. a connect
+ * timeout or reset), or the exchange answered 429 or 5xx. A wrong shape, a 4xx, a
+ * body that is not JSON or a slow answer hitting `timeoutMs` is a real finding.
+ */
+export function isTransient(error: unknown): boolean {
+  if (error instanceof HttpError) return error.status === 429 || error.status >= 500
+  return error instanceof TypeError
+}
+
+/** "fetch failed (UND_ERR_CONNECT_TIMEOUT)": the message with the underlying cause. */
+export function errorDetail(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const cause = error.cause as { code?: unknown; message?: unknown } | undefined
+  const detail = typeof cause?.code === 'string' ? cause.code : typeof cause?.message === 'string' ? cause.message : ''
+  return detail ? `${error.message} (${detail})` : error.message
+}
+
+async function getJsonOnce<T>(url: string, timeoutMs: number): Promise<T> {
   const host = new URL(url).hostname
   const wait = (lastRequest.get(host) ?? 0) + GAP_MS - Date.now()
   if (wait > 0) await delay(wait)
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) })
     const body = await response.text()
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}: ${body.slice(0, 200)}`)
+    if (!response.ok) throw new HttpError(response.status, `HTTP ${response.status} for ${url}: ${body.slice(0, 200)}`)
     try {
       return JSON.parse(body) as T
     } catch {
@@ -41,6 +67,28 @@ export async function getJson<T = unknown>(url: string, timeoutMs = 90_000): Pro
     }
   } finally {
     lastRequest.set(host, Date.now())
+  }
+}
+
+/**
+ * GETs `url` with a plain fetch and no custom headers, as the server does, and
+ * parses the body as JSON. Transient failures (see isTransient) are retried after
+ * RETRY_DELAYS_MS; anything else throws at once, with the status and the start of
+ * the body on a non-2xx answer or a body that is not JSON.
+ */
+export async function getJson<T = unknown>(url: string, timeoutMs = 90_000): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await getJsonOnce<T>(url, timeoutMs)
+    } catch (error) {
+      if (!isTransient(error)) throw error
+      if (attempt >= RETRY_DELAYS_MS.length) {
+        throw new Error(`${errorDetail(error)} for ${url}, ${attempt + 1} attempts`, { cause: error })
+      }
+      const pause = RETRY_DELAYS_MS[attempt]
+      console.warn(`Retrying ${url} in ${pause / 1000} s after ${errorDetail(error)}`)
+      await delay(pause)
+    }
   }
 }
 

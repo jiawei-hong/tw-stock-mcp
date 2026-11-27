@@ -4,8 +4,9 @@ import { configDefaults, defineConfig } from 'vitest/config'
  * Live contract tests: `pnpm test:live`. Every tests/live/**\/*.live.test.ts
  * file calls the real exchange endpoints with global fetch. No setup file or
  * shared helper is needed. Files run one at a time and the tests in a file in
- * order, so the exchanges never see a burst; a failed test is retried once to
- * ride out a transient network error.
+ * order, so the exchanges never see a burst. tests/live/support.ts retries a
+ * connection failure or a 429/5xx answer itself; a failed test is also retried
+ * once.
  */
 export default defineConfig({
   test: {

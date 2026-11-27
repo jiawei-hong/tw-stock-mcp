@@ -41,7 +41,9 @@ function expectLatestDay(value: unknown) {
 }
 
 describe('www.twse.com.tw', () => {
-  test('exchangeReport/STOCK_DAY (monthly history)', () => {
+  test('exchangeReport/STOCK_DAY (monthly history)', async () => {
+    // The shared lookup in beforeAll failed: look again here, so vitest's retry really retries.
+    if (session.error) session = await recentSession('tse', '2330')
     if (session.error) throw session.error
     const report = session.history as Report
     expectOk(report)
