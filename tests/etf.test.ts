@@ -1,4 +1,4 @@
-import { ETF_NAV_URL, loadEtfNavs, parseEtfNavs, premiumPercent, resetEtfNavCache } from '../src/core/etf.js'
+import { ETF_NAV_URL, ETN_VALUE_URL, loadEtfNavs, loadEtnValues, parseEtfNavs, parseEtnValues, premiumPercent, resetEtfNavCache } from '../src/core/etf.js'
 import type { MisRow } from '../src/core/quotes.js'
 import { resetSecurityCache } from '../src/core/securities.js'
 import { getQuoteTool } from '../src/tools/get-quote.js'
@@ -178,5 +178,104 @@ describe('get_quote for ETFs', () => {
     expect(result.quotes).toMatchObject([{ code: '2330' }, { code: '0050', price: 90.3, nav: null }])
     expect((result.quotes as object[])[0]).not.toHaveProperty('nav')
     expect(result.warnings).toEqual([expect.stringMatching(/^ETF NAV feed unavailable, so ETF quotes have nav null: .*HTTP 404.*Retry in a minute/)])
+  })
+})
+
+// Real all_etn.txt group (2026-11-27), trimmed: every number arrives as a string.
+const etnFeed = {
+  a1: [
+    {
+      msgArray: [
+        { a: '020020', b: '元大台股領航N', c: '1400000000', d: '0', e: '23.90', f: '23.9162', g: '-0.0677', h: '23.9520', i: '20261127', j: '13:33:25', k: '1' },
+        { a: '020028', b: '元大特選電動車N', c: '500000000', d: '0', e: '15.53', f: '15.2822', g: '1.6215', h: '未結出', i: '20261127', j: '13:33:25', k: '3' },
+      ],
+      refURL: 'https://www.yuantaetfs.com',
+      rtCode: '0000',
+    },
+  ],
+}
+const isEtnFeed = (url: URL) => url.pathname === '/stock/data/all_etn.txt'
+
+describe('parseEtnValues', () => {
+  it('reads indicative values from string fields, with 「未結出」 as no previous value', () => {
+    const values = parseEtnValues(etnFeed)
+    expect(values.get('020020')).toEqual({
+      code: '020020',
+      estimated_nav: 23.9162,
+      previous_nav: 23.952,
+      date: '2026-11-27',
+      time: '13:33:25',
+      units_outstanding: 1_400_000_000,
+      units_change: 0,
+      underlying_zone: 'domestic',
+    })
+    expect(values.get('020028')).toMatchObject({ previous_nav: null, underlying_zone: 'europe_americas' })
+    expect(() => parseEtnValues({ a1: [] })).toThrow('ETN indicative value feed has no rows')
+  })
+
+  it('loads the ETN feed separately from the ETF feed', async () => {
+    resetEtfNavCache()
+    const { calls } = stubFetch({ 'mis.twse.com.tw': (url) => (isEtnFeed(url) ? etnFeed : feed) })
+    await loadEtnValues()
+    await loadEtfNavs()
+    await loadEtnValues()
+    expect(calls.map(String)).toEqual([ETN_VALUE_URL, ETF_NAV_URL])
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('get_quote for ETNs', () => {
+  const context = { signal: new AbortController().signal }
+  const rows = [
+    misRow(),
+    misRow({ c: '0050', ch: '0050.tw', n: '元大台灣50', z: '90.3000', y: '94.8000', d: '20261125' }),
+    misRow({ c: '020020', ch: '020020.tw', n: '元大台股領航N', z: '23.9000', y: '23.8500', d: '20261127' }),
+  ]
+  const host = (etn: () => unknown) => (url: URL) =>
+    isEtnFeed(url) ? etn() : isNavFeed(url) ? feed : misRoute(rows)(url)
+
+  beforeEach(() => {
+    resetEtfNavCache()
+    resetSecurityCache()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('adds indicative_value to ETNs, nav to ETFs, and nothing to stocks', async () => {
+    const { calls } = stubFetch({ 'mis.twse.com.tw': host(() => etnFeed) })
+    const result = await getQuoteTool.run({ symbols: ['2330', '0050', '020020'] }, context)
+    const [stock, etf, etn] = result.quotes as Record<string, unknown>[]
+    expect(stock).not.toHaveProperty('nav')
+    expect(stock).not.toHaveProperty('indicative_value')
+    expect(etf).toHaveProperty('nav.estimated_nav', 90.45)
+    expect(etf).not.toHaveProperty('indicative_value')
+    expect(etn).toMatchObject({
+      code: '020020',
+      indicative_value: { estimated_value: 23.9162, premium_percent: -0.07, previous_value: 23.952, date: '2026-11-27', time: '13:33:25' },
+    })
+    expect(etn).not.toHaveProperty('nav')
+    expect(result.warnings).toEqual([])
+    expect(calls.filter((url) => isEtnFeed(url) || isNavFeed(url)).map((url) => url.pathname).sort()).toEqual([
+      '/stock/data/all_etf.txt',
+      '/stock/data/all_etn.txt',
+    ])
+  })
+
+  it('asks only for the ETN feed when no ETF was quoted', async () => {
+    const { calls } = stubFetch({ 'mis.twse.com.tw': host(() => etnFeed) })
+    await getQuoteTool.run({ symbols: ['020020'] }, context)
+    expect(calls.some(isNavFeed)).toBe(false)
+    expect(calls.some(isEtnFeed)).toBe(true)
+  })
+
+  it('still returns the ETN quote, with a warning, when the ETN feed fails', async () => {
+    stubFetch({ 'mis.twse.com.tw': host(() => new Response('gone', { status: 404 })) })
+    const result = await getQuoteTool.run({ symbols: ['020020'] }, context)
+    expect(result.quotes).toMatchObject([{ code: '020020', price: 23.9, indicative_value: null }])
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/^ETN indicative value feed unavailable, so ETN quotes have indicative_value null: .*HTTP 404.*Retry in a minute/),
+    ])
   })
 })

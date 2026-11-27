@@ -1,4 +1,4 @@
-import { type EtfNav, loadEtfNavs, premiumPercent } from '../core/etf.js'
+import { type EtfNav, loadEtfNavs, loadEtnValues, premiumPercent } from '../core/etf.js'
 import { normaliseCode, type Market } from '../core/market.js'
 import { fetchQuotes, type Quote } from '../core/quotes.js'
 import { listedElsewhere } from '../core/resolve.js'
@@ -21,6 +21,11 @@ type Unresolved = {
 }
 
 type QuoteNav = Omit<EtfNav, 'code'> & { premium_percent: number | null }
+type QuoteIndicativeValue = Omit<EtfNav, 'code' | 'estimated_nav' | 'previous_nav'> & {
+  estimated_value: number | null
+  premium_percent: number | null
+  previous_value: number | null
+}
 
 const MAX_SUGGESTIONS = 5
 
@@ -52,6 +57,24 @@ const navSchema = {
   },
   required: ['estimated_nav', 'premium_percent', 'previous_nav', 'date', 'time'],
 } as const
+const indicativeValueSchema = {
+  type: ['object', 'null'],
+  description: 'ETNs only (absent for other securities). null when the issuer publishes no value or the feed failed (see warnings).',
+  properties: {
+    estimated_value: { ...nullableNumber, description: '發行人預估指標價值: the issuer\'s intraday estimate of the indicative value, per unit' },
+    premium_percent: {
+      ...nullableNumber,
+      description: '(price / estimated_value - 1) x 100 with this quote\'s price: positive = premium (溢價), negative = discount (折價). null without a trade price.',
+    },
+    previous_value: { ...nullableNumber, description: '前一營業日指標價值: the previous business day\'s indicative value; null until the issuer publishes it' },
+    date: navSchema.properties.date,
+    time: navSchema.properties.time,
+    units_outstanding: { ...nullableNumber, description: '已發行單位數 (ETN units)' },
+    units_change: { ...nullableNumber, description: 'Change in units outstanding from the previous day' },
+    underlying_zone: navSchema.properties.underlying_zone,
+  },
+  required: ['estimated_value', 'premium_percent', 'previous_value', 'date', 'time'],
+} as const
 
 async function suggest(input: string, market?: Market): Promise<Security[]> {
   try {
@@ -65,45 +88,83 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+type Loader = (signal?: AbortSignal) => Promise<Map<string, EtfNav>>
+
 /**
- * Adds `nav` to ETF quotes from one shared request; other quotes are returned unchanged.
- * A failed feed never fails the quote: ETFs then get nav null and a warning.
+ * Adds `nav` to ETF quotes and `indicative_value` to ETN quotes, one shared request per
+ * feed; other quotes are returned unchanged. A failed feed never fails the quote: the
+ * affected quotes get null and a warning.
  */
 async function withNav(
   quotes: Quote[],
   warnings: string[],
   signal: AbortSignal
-): Promise<(Quote | (Quote & { nav: QuoteNav | null }))[]> {
-  const isEtf = (quote: Quote) => classifySecurity(quote.code) === 'etf'
-  if (!quotes.some(isEtf)) return quotes
-  let navs: Map<string, EtfNav> | null = null
-  try {
-    navs = await loadEtfNavs(signal)
-  } catch (error) {
-    signal.throwIfAborted()
-    warnings.push(`ETF NAV feed unavailable, so ETF quotes have nav null: ${errorText(error)}. Retry in a minute for NAV and premium.`)
-  }
-  const unpublished: string[] = []
-  const result = quotes.map((quote) => {
-    if (!isEtf(quote)) return quote
-    const nav = navs?.get(quote.code)
-    if (navs && !nav) unpublished.push(quote.code)
-    if (!nav) return { ...quote, nav: null }
-    return {
-      ...quote,
-      nav: {
-        estimated_nav: nav.estimated_nav,
-        premium_percent: premiumPercent(quote.price, nav.estimated_nav),
-        previous_nav: nav.previous_nav,
-        date: nav.date,
-        time: nav.time,
-        units_outstanding: nav.units_outstanding,
-        units_change: nav.units_change,
-        underlying_zone: nav.underlying_zone,
-      },
+): Promise<(Quote | (Quote & { nav: QuoteNav | null }) | (Quote & { indicative_value: QuoteIndicativeValue | null }))[]> {
+  const types = new Set(quotes.map((quote) => classifySecurity(quote.code)))
+  const load = async (wanted: boolean, loader: Loader, failure: string) => {
+    if (!wanted) return undefined
+    try {
+      return await loader(signal)
+    } catch (error) {
+      signal.throwIfAborted()
+      warnings.push(failure.replace('%s', errorText(error)))
+      return null
     }
+  }
+  const [navs, values] = await Promise.all([
+    load(types.has('etf'), loadEtfNavs, 'ETF NAV feed unavailable, so ETF quotes have nav null: %s. Retry in a minute for NAV and premium.'),
+    load(
+      types.has('etn'),
+      loadEtnValues,
+      'ETN indicative value feed unavailable, so ETN quotes have indicative_value null: %s. Retry in a minute for the value and premium.'
+    ),
+  ])
+  if (navs === undefined && values === undefined) return quotes
+
+  const noNav: string[] = []
+  const noValue: string[] = []
+  const result = quotes.map((quote) => {
+    const type = classifySecurity(quote.code)
+    if (type === 'etf') {
+      const nav = navs?.get(quote.code)
+      if (navs && !nav) noNav.push(quote.code)
+      if (!nav) return { ...quote, nav: null }
+      return {
+        ...quote,
+        nav: {
+          estimated_nav: nav.estimated_nav,
+          premium_percent: premiumPercent(quote.price, nav.estimated_nav),
+          previous_nav: nav.previous_nav,
+          date: nav.date,
+          time: nav.time,
+          units_outstanding: nav.units_outstanding,
+          units_change: nav.units_change,
+          underlying_zone: nav.underlying_zone,
+        },
+      }
+    }
+    if (type === 'etn') {
+      const value = values?.get(quote.code)
+      if (values && !value) noValue.push(quote.code)
+      if (!value) return { ...quote, indicative_value: null }
+      return {
+        ...quote,
+        indicative_value: {
+          estimated_value: value.estimated_nav,
+          premium_percent: premiumPercent(quote.price, value.estimated_nav),
+          previous_value: value.previous_nav,
+          date: value.date,
+          time: value.time,
+          units_outstanding: value.units_outstanding,
+          units_change: value.units_change,
+          underlying_zone: value.underlying_zone,
+        },
+      }
+    }
+    return quote
   })
-  if (unpublished.length) warnings.push(`No estimated NAV is published for ${unpublished.join(', ')}; nav is null.`)
+  if (noNav.length) warnings.push(`No estimated NAV is published for ${noNav.join(', ')}; nav is null.`)
+  if (noValue.length) warnings.push(`No indicative value is published for ${noValue.join(', ')}; indicative_value is null.`)
   return result
 }
 
@@ -120,6 +181,7 @@ export const getQuoteTool: Tool<Input> = {
     'ETF quotes (TWSE and TPEx) also carry `nav`: the issuer\'s estimated NAV (預估淨值), premium_percent of `price` against it (positive = premium, negative = discount) and the previous business day\'s NAV.',
     'The estimate comes from the TWSE MIS ETF disclosure feed, which issuers update during the session on their own schedule (the exchange\'s page refreshes every 15 seconds) and leave at their last value after the close, so check nav.date and nav.time.',
     'For ETFs whose underlying trades outside Taiwan hours (underlying_zone not "domestic"), the estimate may not move during the Taiwan session.',
+    'ETN quotes (codes 020xxx, e.g. 020020 or 02001L) carry `indicative_value` instead: the issuer\'s estimated indicative value (預估指標價值), premium_percent of `price` against it and the previous business day\'s value, from the TWSE MIS ETN disclosure feed, with the same timing caveats.',
   ].join(' '),
   inputSchema: {
     type: 'object',
@@ -177,6 +239,7 @@ export const getQuoteTool: Tool<Input> = {
               enum: ['traded_today', 'previous_session', 'no_trade', 'unknown_date'],
             },
             nav: navSchema,
+            indicative_value: indicativeValueSchema,
           },
           required: ['code', 'name', 'market', 'price', 'status'],
         },

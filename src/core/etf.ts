@@ -16,9 +16,16 @@ import { compactDateToIso, strictNumber } from './market.js'
  *   h 前一營業日單位淨值 (「未結出」 until published), i 資料日期 YYYYMMDD, j 資料時間 HH:MM:SS,
  *   k 標的時區: 1 國內成分證券, 2 亞洲, 3 歐美, 4 全球.
  * Depending on the issuer, numbers are JSON numbers or strings, with or without thousands separators.
+ *
+ * ETNs have no NAV: their issuers publish an indicative value (指標價值) in `all_etn.txt`,
+ * the feed behind 「ETN發行單位變動及指標價值揭露專區」. Verified against the live feed and
+ * the MIS page labels (2026-11-27): the same shape and fields, 20 ETNs (codes 020xxx), with
+ * f 發行人預估指標價值, g 預估折溢價幅度 % = (成交價 / 預估指標價值 - 1) x 100 and
+ * h 前一營業日指標價值; c and d count ETN units. Numbers there are strings.
  */
 
 export const ETF_NAV_URL = 'https://mis.twse.com.tw/stock/data/all_etf.txt'
+export const ETN_VALUE_URL = 'https://mis.twse.com.tw/stock/data/all_etn.txt'
 
 /** Matches the MIS page's own refresh interval. */
 const NAV_TTL_MS = 15_000
@@ -57,10 +64,10 @@ function positive(value: unknown): number | null {
   return number !== null && number > 0 ? number : null
 }
 
-/** Every ETF in the feed, by code. */
-export function parseEtfNavs(data: unknown): Map<string, EtfNav> {
+/** Every row of an MIS disclosure feed, by code; `label` names the feed in errors. */
+function parseFeed(data: unknown, label: string): Map<string, EtfNav> {
   const groups = data && typeof data === 'object' ? (data as { a1?: unknown }).a1 : undefined
-  if (!Array.isArray(groups)) throw new Error('Invalid ETF NAV response: no a1 groups')
+  if (!Array.isArray(groups)) throw new Error(`Invalid ${label} response: no a1 groups`)
   const navs = new Map<string, EtfNav>()
   for (const group of groups) {
     const rows = group && typeof group === 'object' ? (group as { msgArray?: unknown }).msgArray : undefined
@@ -83,8 +90,18 @@ export function parseEtfNavs(data: unknown): Map<string, EtfNav> {
       })
     }
   }
-  if (navs.size === 0) throw new Error('ETF NAV feed has no rows')
+  if (navs.size === 0) throw new Error(`${label} feed has no rows`)
   return navs
+}
+
+/** Every ETF in the NAV feed, by code. */
+export function parseEtfNavs(data: unknown): Map<string, EtfNav> {
+  return parseFeed(data, 'ETF NAV')
+}
+
+/** Every ETN in the indicative value feed, by code; `estimated_nav` and `previous_nav` hold 指標價值. */
+export function parseEtnValues(data: unknown): Map<string, EtfNav> {
+  return parseFeed(data, 'ETN indicative value')
 }
 
 /** (price / NAV - 1) x 100, the exchange's formula; positive is a premium, negative a discount. */
@@ -93,20 +110,31 @@ export function premiumPercent(price: number | null, nav: number | null): number
   return Math.round((price / nav - 1) * 10_000) / 100
 }
 
-let cached: { expiresAt: number; navs: Promise<Map<string, EtfNav>> } | undefined
+const feeds = new Map<string, { expiresAt: number; navs: Promise<Map<string, EtfNav>> }>()
 
 export function resetEtfNavCache(): void {
-  cached = undefined
+  feeds.clear()
 }
 
-/** The whole feed in one request (~60 KB), shared for 15 seconds. */
-export function loadEtfNavs(signal?: AbortSignal): Promise<Map<string, EtfNav>> {
-  if (cached && cached.expiresAt > Date.now()) return cached.navs
-  const navs = requestJson<unknown>(ETF_NAV_URL, { signal }).then(parseEtfNavs)
+/** A whole feed in one request, shared for 15 seconds; a failure is not cached. */
+function loadFeed(url: string, parse: (data: unknown) => Map<string, EtfNav>, signal?: AbortSignal) {
+  const hit = feeds.get(url)
+  if (hit && hit.expiresAt > Date.now()) return hit.navs
+  const navs = requestJson<unknown>(url, { signal }).then(parse)
   const entry = { expiresAt: Date.now() + NAV_TTL_MS, navs }
-  cached = entry
+  feeds.set(url, entry)
   navs.catch(() => {
-    if (cached === entry) cached = undefined
+    if (feeds.get(url) === entry) feeds.delete(url)
   })
   return navs
+}
+
+/** Every ETF's estimated NAV (~60 KB). */
+export function loadEtfNavs(signal?: AbortSignal): Promise<Map<string, EtfNav>> {
+  return loadFeed(ETF_NAV_URL, parseEtfNavs, signal)
+}
+
+/** Every ETN's estimated indicative value (~4 KB). */
+export function loadEtnValues(signal?: AbortSignal): Promise<Map<string, EtfNav>> {
+  return loadFeed(ETN_VALUE_URL, parseEtnValues, signal)
 }
