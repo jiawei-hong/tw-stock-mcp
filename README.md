@@ -56,7 +56,7 @@ If the first start never finishes, npm probably cannot reach `registry.npmjs.org
 | `get_stock_overview` | Everything in one call: quote, 1-month price summary, fundamentals, company profile (industry, listing date, capital), latest institutional and margin trading, foreign ownership against its ceiling, upcoming events. |
 | `compare_stocks` | 2–10 stocks side by side: close, 1M/3M/1Y price return, P/E, P/B, yield, revenue YoY, margins and foreign ownership, with the highest, lowest and median per metric. Costs the same however many stocks you compare. |
 | `search_security` | Find securities by code or name fragment. Excludes warrants and convertible bonds unless asked. |
-| `get_quote` | Near-realtime quotes for up to 50 stocks/ETFs: price, change, OHLC, limits, volume, 5-level bid/ask, status. ETFs add estimated NAV, premium/discount and previous NAV. |
+| `get_quote` | Near-realtime quotes for up to 50 stocks/ETFs: price, change, OHLC, limits, volume, 5-level bid/ask, status. ETFs add estimated NAV, premium/discount and previous NAV; ETNs add the issuer's estimated indicative value (指標價值) and premium. |
 | `get_history` | Daily/weekly bars for up to a year, monthly/yearly bars for up to 10 years (from exchange statistics), with a summary, and moving averages and RSI, MACD, KD and Bollinger Bands on windows up to a year. |
 | `get_fundamentals` | P/E, dividend yield, P/B; latest monthly revenue with MoM/YoY; latest income statement with EPS and margins. Optional (`include`): balance sheet with debt ratio, current ratio and ROE/ROA; dividend history with cash/stock dividends and ex-dividend dates; company profile with industry, listing and founding dates, paid-in capital, chairman, general manager and website. |
 | `get_ownership` | Shareholder distribution by holding tier (集保股權分散, latest week) with large and small holder shares; foreign ownership against its ceiling (外資持股). |
@@ -103,7 +103,7 @@ claude mcp add --transport http tw-stock http://127.0.0.1:8886/mcp
 
 - Realtime quotes and indices: TWSE MIS (`mis.twse.com.tw`)
 - End-of-day prices, history, index history, multi-year statistics, institutional, margin, day trading and securities lending, foreign ownership, ex-dividend history: `www.twse.com.tw`, `www.tpex.org.tw`
-- ETF estimated NAV: the TWSE MIS ETF disclosure feed (TWSE and TPEx ETFs)
+- ETF estimated NAV and ETN indicative value: the TWSE MIS ETF and ETN disclosure feeds (TWSE and TPEx)
 - Fundamentals (including balance sheets, dividend resolutions and company profiles) and events: TWSE / TPEx OpenAPI (`openapi.twse.com.tw`, `www.tpex.org.tw/openapi`)
 - Security directory and shareholder distribution: TDCC open data (`openapi.tdcc.com.tw`)
 
