@@ -97,7 +97,7 @@ npx -y npm:tw-stock-mcp@0.3.0 --http
 claude mcp add --transport http tw-stock http://127.0.0.1:8886/mcp
 ```
 
-**Disk cache.** Set `TW_STOCK_MCP_CACHE_DIR` to keep past data that cannot change on disk across sessions: months of history that have ended, and institutional, margin, securities lending and daily quotes for days before today in Taipei. Today's data, errors and empty answers are never cached. `TW_STOCK_MCP_CACHE_MAX_MB` caps its size (default 512); the least recently used files go first. Delete the directory to clear it.
+**Disk cache.** Set `TW_STOCK_MCP_CACHE_DIR` to keep past data that cannot change on disk across sessions: months of history that have ended, and institutional trading and daily quotes for days before today in Taipei. Margin, securities lending and day trading reports can be restated after the day, so they are kept only once they are 14 days old. Today's data, errors and empty answers are never cached. `TW_STOCK_MCP_CACHE_MAX_MB` caps its size (default 512); the least recently used files go first. Delete the directory to clear it.
 
 ## Data sources
 

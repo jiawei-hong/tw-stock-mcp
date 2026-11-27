@@ -1,4 +1,4 @@
-import { cacheIfPastDay } from './disk-cache.js'
+import { cacheIfSettled } from './disk-cache.js'
 import { requestJson } from './http.js'
 import { type Market, strictNumber } from './market.js'
 import { DailyCache } from './trading-day.js'
@@ -222,7 +222,7 @@ export function resetMarginCache(): void {
 export function loadMargin(date: string, market: Market, signal?: AbortSignal, onNetwork?: () => void) {
   const url = marginUrl(date, market)
   return cache.get(url, date, async () =>
-    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date), onNetwork }), market, date)
+    parseMargin(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfSettled(date), onNetwork }), market, date)
   )
 }
 
@@ -350,6 +350,6 @@ export function parseSbl(data: unknown, market: Market, date?: string): SblDay |
 export function loadSbl(date: string, market: Market, signal?: AbortSignal) {
   const url = sblUrl(date, market)
   return cache.get(url, date, async () =>
-    parseSbl(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfPastDay(date) }), market, date)
+    parseSbl(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfSettled(date) }), market, date)
   )
 }

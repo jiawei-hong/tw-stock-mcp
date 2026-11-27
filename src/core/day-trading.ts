@@ -1,4 +1,5 @@
 import { loadTpexDaily, loadTwseDaily } from './daily-quotes.js'
+import { cacheIfSettled } from './disk-cache.js'
 import { requestJson } from './http.js'
 import { type Market, strictNumber } from './market.js'
 import { DailyCache } from './trading-day.js'
@@ -170,11 +171,11 @@ export function resetDayTradingCache(): void {
   cache.clear()
 }
 
-// Not disk-cached: the exchanges may revise a day's figures until T+2, so a past day is not yet immutable.
+// Brokers can correct a day's figures until T+2, so only settled days go to the disk cache.
 export function loadDayTrading(date: string, market: Market, signal?: AbortSignal): Promise<DayTradeDay | null> {
   const url = dayTradingUrl(date, market)
   return cache.get(url, date, async () =>
-    parseDayTrading(await requestJson<unknown>(url, { signal, timeoutMs: 30_000 }), market, date)
+    parseDayTrading(await requestJson<unknown>(url, { signal, timeoutMs: 30_000, cache: cacheIfSettled(date) }), market, date)
   )
 }
 

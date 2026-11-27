@@ -7,6 +7,7 @@ import {
   CACHE_DIR_ENV,
   cacheIfClosedMonth,
   cacheIfPastDay,
+  cacheIfSettled,
   DiskCache,
   diskCacheFromEnv,
   getDiskCache,
@@ -94,6 +95,14 @@ describe('cache policies', () => {
     expect(cacheIfClosedMonth('2026-11', now)).toBeUndefined()
     // 1 Dec 00:30 in Taipei: November has ended.
     expect(cacheIfClosedMonth('2026-11', new Date('2026-11-30T16:30:00Z'))).toEqual({ mode: 'immutable', date: '2026-11' })
+  })
+
+  it('marks restatable reports only once they are 14 calendar days old', () => {
+    expect(cacheIfSettled('2026-11-11', now)).toEqual({ mode: 'immutable', date: '2026-11-11' })
+    expect(cacheIfSettled('2026-11-12', now)).toBeUndefined()
+    expect(cacheIfSettled('2026-11-24', now)).toBeUndefined()
+    // Across a month boundary.
+    expect(cacheIfSettled('2026-10-31', new Date('2026-11-14T04:00:00Z'))).toEqual({ mode: 'immutable', date: '2026-10-31' })
   })
 })
 
@@ -359,15 +368,28 @@ describe('call sites', () => {
     expect(fetchMock).toHaveBeenCalledTimes(5)
   })
 
-  it('keeps past margin days on both exchanges', async () => {
+  it('keeps margin days on both exchanges only once they have settled', async () => {
+    // Margin balances are provisional until the next day's report: a recent day stays off disk.
+    const SETTLED = '2026-11-06'
     stubFetch({
-      'www.twse.com.tw': () => twseTables(PAST, [{ title: '信用交易統計', data: [] }, { title: '融資融券彙總 (全部)', data: [['2330']] }]),
-      'www.tpex.org.tw': () => tpexTables(PAST, [['6488']]),
+      'www.twse.com.tw': (url) => {
+        const date = url.searchParams.get('date') ?? ''
+        const iso = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6)}`
+        return twseTables(iso, [{ title: '信用交易統計', data: [] }, { title: '融資融券彙總 (全部)', data: [['2330']] }])
+      },
+      'www.tpex.org.tw': (url) => {
+        const [year, month, day] = (url.searchParams.get('d') ?? '').split('/')
+        return tpexTables(`${Number(year) + 1911}-${month}-${day}`, [['6488']])
+      },
     })
-    await loadMargin(PAST, 'tse')
-    await loadMargin(PAST, 'otc')
-    expect(await cached(marginUrl(PAST, 'tse'))).toBe(true)
-    expect(await cached(marginUrl(PAST, 'otc'))).toBe(true)
+    for (const date of [PAST, SETTLED]) {
+      await loadMargin(date, 'tse')
+      await loadMargin(date, 'otc')
+    }
+    expect(await cached(marginUrl(PAST, 'tse'))).toBe(false)
+    expect(await cached(marginUrl(PAST, 'otc'))).toBe(false)
+    expect(await cached(marginUrl(SETTLED, 'tse'))).toBe(true)
+    expect(await cached(marginUrl(SETTLED, 'otc'))).toBe(true)
   })
 
   it('keeps past TWSE daily quotes, and not a TPEx answer for the wrong day', async () => {

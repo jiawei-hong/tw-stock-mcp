@@ -66,6 +66,21 @@ export function cacheIfPastDay(date: string, now = new Date()): CachePolicy | un
   return date < taipeiToday(now) ? { mode: 'immutable', date } : undefined
 }
 
+/** Calendar days after which a restatable report counts as final; see cacheIfSettled. */
+export const SETTLE_DAYS = 14
+
+/**
+ * A policy for reports the exchanges restate after the day: margin balances are
+ * provisional until the next day's report, and day trades can be corrected until
+ * T+2. `date` must be at least SETTLE_DAYS calendar days before today in
+ * Asia/Taipei, which covers T+2 trading days even across the Lunar New Year closure.
+ */
+export function cacheIfSettled(date: string, now = new Date()): CachePolicy | undefined {
+  const settled = new Date(`${taipeiToday(now)}T00:00:00Z`)
+  settled.setUTCDate(settled.getUTCDate() - SETTLE_DAYS)
+  return date <= settled.toISOString().slice(0, 10) ? { mode: 'immutable', date } : undefined
+}
+
 /** A policy when `month` (YYYY-MM) ended before the current month in Asia/Taipei. */
 export function cacheIfClosedMonth(month: string, now = new Date()): CachePolicy | undefined {
   return month < taipeiToday(now).slice(0, 7) ? { mode: 'immutable', date: month } : undefined
